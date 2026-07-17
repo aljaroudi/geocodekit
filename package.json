@@ -1,0 +1,58 @@
+{
+	"name": "geocodekit",
+	"version": "1.0.0",
+	"description": "Type-safe geocode / reverse-geocode helper for Mapbox, Google Maps, and Geocod.io — never throws.",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./mapbox": {
+			"types": "./dist/mapbox.d.ts",
+			"import": "./dist/mapbox.js"
+		},
+		"./google": {
+			"types": "./dist/google.d.ts",
+			"import": "./dist/google.js"
+		},
+		"./geocod": {
+			"types": "./dist/geocod.d.ts",
+			"import": "./dist/geocod.js"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"check": "tsc && tsc -p tests && bun test",
+		"test": "bun test",
+		"prepublishOnly": "npm run build",
+		"format": "biome format --write"
+	},
+	"keywords": [
+		"geocode",
+		"reverse-geocode",
+		"mapbox",
+		"google-maps",
+		"geocodio"
+	],
+	"author": "",
+	"license": "MIT",
+	"engines": {
+		"node": ">=18"
+	},
+	"dependencies": {
+		"zod": "^4.4.3"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.4",
+		"@total-typescript/ts-reset": "^0.6.1",
+		"@types/bun": "^1.3.14",
+		"typescript": "^7.0.2"
+	},
+	"sideEffects": false
+}
