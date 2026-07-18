@@ -10,8 +10,6 @@ npm install geocodekit
 bun add geocodekit
 ```
 
-Requires Node 18+ (or any runtime with global `fetch`).
-
 ## Quick start
 
 ```ts
@@ -67,8 +65,10 @@ await geo.geocode({
 
 ### Options that narrow types
 
-- `require: ['street', …]`: missing fields → `MISSING_FIELDS`; success narrows `components`
+- `require: ['street', 'county', 'name', …]`: missing fields → `MISSING_FIELDS`; success narrows those keys on `Place` / `components`
 - `minAccuracy: 'rooftop'`: too coarse → `LOW_ACCURACY`; success narrows `accuracy`
+
+`name` is the place / POI / addressee label (Geocod `addressee`, Mapbox non-address feature labels). Google Geocoding often omits it. New components: `unit`, `neighborhood`, `county`.
 
 ### `withAddress`
 

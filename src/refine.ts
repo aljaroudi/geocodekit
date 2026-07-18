@@ -3,28 +3,33 @@ import type { GeoResult, ProviderName } from './types.js'
 import {
 	ACCURACY_RANK,
 	type Accuracy,
-	type ComponentKey,
 	type Place,
+	type RequireKey,
 } from './types.js'
 
 export function meetsAccuracy(place: Place, min: Accuracy): boolean {
 	return ACCURACY_RANK[place.accuracy] >= ACCURACY_RANK[min]
 }
 
-export function missingComponents(
+function isBlank(v: string | undefined): boolean {
+	return v == null || v === ''
+}
+
+/** Keys from `require` that are empty on this place. */
+export function missingRequired(
 	place: Place,
-	require: readonly ComponentKey[],
-): ComponentKey[] {
+	require: readonly RequireKey[],
+): RequireKey[] {
 	return require.filter((k) => {
-		const v = place.components[k]
-		return v == null || v === ''
+		if (k === 'name') return isBlank(place.name)
+		return isBlank(place.components[k])
 	})
 }
 
 /** Apply minAccuracy + require after a successful Place. */
 export function refinePlace(
 	place: Place,
-	opts: { minAccuracy?: Accuracy; require?: readonly ComponentKey[] },
+	opts: { minAccuracy?: Accuracy; require?: readonly RequireKey[] },
 	provider?: ProviderName,
 ): GeoResult<Place> {
 	if (opts.minAccuracy && !meetsAccuracy(place, opts.minAccuracy)) {
@@ -36,7 +41,7 @@ export function refinePlace(
 		})
 	}
 	if (opts.require?.length) {
-		const missing = missingComponents(place, opts.require)
+		const missing = missingRequired(place, opts.require)
 		if (missing.length) {
 			return err({
 				code: 'MISSING_FIELDS',

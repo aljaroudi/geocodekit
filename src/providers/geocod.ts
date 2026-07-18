@@ -19,6 +19,8 @@ const addressComponentsSchema = z.object({
 	number: z.optional(z.string()),
 	street: z.optional(z.string()),
 	formatted_street: z.optional(z.string()),
+	street2: z.optional(z.string()),
+	addressee: z.optional(z.string()),
 	city: z.optional(z.string()),
 	county: z.optional(z.string()),
 	state: z.optional(z.string()),
@@ -31,6 +33,8 @@ const resultSchema = z.object({
 	formatted_address: z.optional(z.string()),
 	accuracy: z.optional(z.nullable(z.number())),
 	accuracy_type: z.optional(z.nullable(z.string())),
+	addressee: z.optional(z.string()),
+	stable_address_key: z.optional(z.string()),
 	address_components: z.optional(addressComponentsSchema),
 	location: z.optional(
 		z.object({
@@ -64,19 +68,24 @@ function toPlace(r: z.infer<typeof resultSchema>): Place | null {
 	const components: AddressComponents = {
 		streetNumber: ac?.number,
 		street: ac?.formatted_street ?? ac?.street,
+		unit: ac?.street2,
 		locality: ac?.city,
+		county: ac?.county,
 		region: ac?.state_province ?? ac?.state,
 		postcode: ac?.postal_code,
 		country: ac?.country,
 		countryCode:
 			ac?.country?.length === 2 ? ac.country.toUpperCase() : undefined,
 	}
+	const name = r.addressee ?? ac?.addressee
 	return {
 		formatted: r.formatted_address ?? `${loc.lat},${loc.lng}`,
 		coordinates: { lat: loc.lat, lng: loc.lng },
 		components,
 		accuracy: geocodAccuracy(r.accuracy_type ?? undefined),
 		provider: 'geocod',
+		id: r.stable_address_key,
+		name,
 	}
 }
 
