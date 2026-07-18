@@ -26,5 +26,6 @@ export type {
 	PlaceNarrowed,
 	ProviderName,
 	RateLimit,
+	RequireKey,
 	WithAddressOpts,
 } from './types.js'

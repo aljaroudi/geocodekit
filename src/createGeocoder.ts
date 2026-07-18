@@ -5,7 +5,6 @@ import { err } from './result.js'
 import type {
 	Accuracy,
 	AddressQuery,
-	ComponentKey,
 	Coords,
 	GeoError,
 	GeoResult,
@@ -13,6 +12,7 @@ import type {
 	LookupOptsBase,
 	Place,
 	PlaceNarrowed,
+	RequireKey,
 } from './types.js'
 
 export type ProvidersSupportBatch<Ps extends readonly Provider[]> =
@@ -25,14 +25,14 @@ export type ArrayModeFor<Ps extends readonly Provider[]> =
 
 export type LookupOptsFor<
 	Ps extends readonly Provider[],
-	R extends ComponentKey = never,
+	R extends RequireKey = never,
 	A extends Accuracy = Accuracy,
 > = Omit<LookupOpts<R, A>, 'mode'> & { mode?: ArrayModeFor<Ps> }
 
 export type WithAddressOptsFor<
 	Ps extends readonly Provider[],
 	T,
-	R extends ComponentKey = never,
+	R extends RequireKey = never,
 	A extends Accuracy = Accuracy,
 > = LookupOptsFor<Ps, R, A> & {
 	getCoords?: (item: T) => Coords
@@ -85,9 +85,7 @@ async function withFallback(
 		const p = providers[i]
 		if (!p) continue
 		const raw = await run(p)
-		const result = !raw.error
-			? refinePlace(raw.data, filter, p.name)
-			: raw
+		const result = !raw.error ? refinePlace(raw.data, filter, p.name) : raw
 		last = result
 		if (!result.error) return result
 		const more = i < providers.length - 1 && shouldFallback(result.error)
@@ -150,26 +148,24 @@ async function runArray<T>(
 	)
 }
 
-export function createGeocoder<const Ps extends readonly unknown[]>(
-	config: {
-		providers: Ps & readonly [Provider, ...Provider[]]
-		shouldFallback?: (error: GeoError) => boolean
-	},
-) {
+export function createGeocoder<const Ps extends readonly unknown[]>(config: {
+	providers: Ps & readonly [Provider, ...Provider[]]
+	shouldFallback?: (error: GeoError) => boolean
+}) {
 	const providers = config.providers
 	const shouldFallback = config.shouldFallback ?? defaultShouldFallback
 
 	type Provs = Ps & readonly [Provider, ...Provider[]]
 
 	async function geocode<
-		R extends ComponentKey = never,
+		R extends RequireKey = never,
 		A extends Accuracy = Accuracy,
 	>(
 		query: AddressQuery,
 		opts?: LookupOptsFor<Provs, R, A>,
 	): Promise<GeoResult<PlaceNarrowed<R, A>>>
 	async function geocode<
-		R extends ComponentKey = never,
+		R extends RequireKey = never,
 		A extends Accuracy = Accuracy,
 	>(
 		query: AddressQuery[],
@@ -177,7 +173,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(
 	): Promise<GeoResult<PlaceNarrowed<R, A>>[]>
 	async function geocode(
 		query: AddressQuery | AddressQuery[],
-		opts?: LookupOptsFor<Provs, ComponentKey, Accuracy>,
+		opts?: LookupOptsFor<Provs, RequireKey, Accuracy>,
 	): Promise<GeoResult<Place> | GeoResult<Place>[]> {
 		if (Array.isArray(query)) {
 			return runArray(
@@ -223,14 +219,14 @@ export function createGeocoder<const Ps extends readonly unknown[]>(
 	}
 
 	async function reverseGeocode<
-		R extends ComponentKey = never,
+		R extends RequireKey = never,
 		A extends Accuracy = Accuracy,
 	>(
 		coords: Coords,
 		opts?: LookupOptsFor<Provs, R, A>,
 	): Promise<GeoResult<PlaceNarrowed<R, A>>>
 	async function reverseGeocode<
-		R extends ComponentKey = never,
+		R extends RequireKey = never,
 		A extends Accuracy = Accuracy,
 	>(
 		coords: Coords[],
@@ -238,7 +234,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(
 	): Promise<GeoResult<PlaceNarrowed<R, A>>[]>
 	async function reverseGeocode(
 		coords: Coords | Coords[],
-		opts?: LookupOptsFor<Provs, ComponentKey, Accuracy>,
+		opts?: LookupOptsFor<Provs, RequireKey, Accuracy>,
 	): Promise<GeoResult<Place> | GeoResult<Place>[]> {
 		if (Array.isArray(coords)) {
 			return runArray(
@@ -285,7 +281,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(
 
 	async function withAddress<
 		T extends Coords,
-		R extends ComponentKey = never,
+		R extends RequireKey = never,
 		A extends Accuracy = Accuracy,
 	>(
 		item: T,
@@ -293,7 +289,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(
 	): Promise<T & { address: GeoResult<PlaceNarrowed<R, A>> }>
 	async function withAddress<
 		T extends object,
-		R extends ComponentKey = never,
+		R extends RequireKey = never,
 		A extends Accuracy = Accuracy,
 	>(
 		item: T,
@@ -303,7 +299,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(
 	): Promise<T & { address: GeoResult<PlaceNarrowed<R, A>> }>
 	async function withAddress<
 		T extends Coords,
-		R extends ComponentKey = never,
+		R extends RequireKey = never,
 		A extends Accuracy = Accuracy,
 	>(
 		items: T[],
@@ -311,7 +307,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(
 	): Promise<Array<T & { address: GeoResult<PlaceNarrowed<R, A>> }>>
 	async function withAddress<
 		T extends object,
-		R extends ComponentKey = never,
+		R extends RequireKey = never,
 		A extends Accuracy = Accuracy,
 	>(
 		items: T[],
@@ -321,13 +317,12 @@ export function createGeocoder<const Ps extends readonly unknown[]>(
 	): Promise<Array<T & { address: GeoResult<PlaceNarrowed<R, A>> }>>
 	async function withAddress(
 		itemOrItems: unknown,
-		opts?: WithAddressOptsFor<Provs, object, ComponentKey, Accuracy>,
+		opts?: WithAddressOptsFor<Provs, object, RequireKey, Accuracy>,
 	): Promise<
 		| (object & { address: GeoResult<Place> })
 		| Array<object & { address: GeoResult<Place> }>
 	> {
-		const getCoords =
-			opts?.getCoords ?? ((x: object) => x as unknown as Coords)
+		const getCoords = opts?.getCoords ?? ((x: object) => x as unknown as Coords)
 
 		if (Array.isArray(itemOrItems)) {
 			const items = itemOrItems as object[]

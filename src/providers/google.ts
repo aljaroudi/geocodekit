@@ -2,12 +2,7 @@ import * as z from 'zod/mini'
 import { safeJson } from '../fetch.js'
 import { googleAccuracy } from '../map/accuracy.js'
 import { err, ok } from '../result.js'
-import type {
-	AddressComponents,
-	AddressQuery,
-	GeoResult,
-	Place,
-} from '../types.js'
+import type { AddressQuery, GeoResult, Place } from '../types.js'
 import type { ApiKeyOptions, Provider } from './types.js'
 
 const componentSchema = z.object({
@@ -52,23 +47,25 @@ function toPlace(r: z.infer<typeof resultSchema>): Place | null {
 	const loc = r.geometry?.location
 	if (!loc) return null
 	const ac = r.address_components
-	const components: AddressComponents = {
-		streetNumber: pickComponent(ac, 'street_number'),
-		street: pickComponent(ac, 'route'),
-		locality:
-			pickComponent(ac, 'locality') ??
-			pickComponent(ac, 'postal_town') ??
-			pickComponent(ac, 'sublocality') ??
-			pickComponent(ac, 'sublocality_level_1'),
-		region: pickComponent(ac, 'administrative_area_level_1'),
-		postcode: pickComponent(ac, 'postal_code'),
-		country: pickComponent(ac, 'country'),
-		countryCode: pickComponent(ac, 'country', true)?.toUpperCase(),
-	}
 	return {
 		formatted: r.formatted_address ?? `${loc.lat},${loc.lng}`,
 		coordinates: { lat: loc.lat, lng: loc.lng },
-		components,
+		components: {
+			streetNumber: pickComponent(ac, 'street_number'),
+			street: pickComponent(ac, 'route'),
+			unit: pickComponent(ac, 'subpremise'),
+			locality:
+				pickComponent(ac, 'locality') ??
+				pickComponent(ac, 'postal_town') ??
+				pickComponent(ac, 'sublocality') ??
+				pickComponent(ac, 'sublocality_level_1'),
+			neighborhood: pickComponent(ac, 'neighborhood'),
+			county: pickComponent(ac, 'administrative_area_level_2'),
+			region: pickComponent(ac, 'administrative_area_level_1'),
+			postcode: pickComponent(ac, 'postal_code'),
+			country: pickComponent(ac, 'country'),
+			countryCode: pickComponent(ac, 'country', true)?.toUpperCase(),
+		},
 		accuracy: googleAccuracy(r.geometry?.location_type),
 		provider: 'google',
 		id: r.place_id,

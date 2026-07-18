@@ -67,6 +67,8 @@ function ctxField(
 	return typeof val === 'string' ? val : undefined
 }
 
+const STREETISH = new Set(['address', 'street', 'secondary_address'])
+
 function featureToPlace(f: Feature): Place | null {
 	const p = f.properties
 	const geo = f.geometry?.coordinates
@@ -84,11 +86,20 @@ function featureToPlace(f: Feature): Place | null {
 		p?.context && typeof p.context === 'object'
 			? (p.context as Record<string, unknown>)
 			: undefined
+	const featureType = p?.feature_type
+	const label = p?.name_preferred ?? p?.name
 	const components: AddressComponents = {
-		streetNumber: typeof p?.address === 'string' ? p.address : undefined,
-		street: p?.name,
+		streetNumber:
+			ctxField(ctx, 'address', 'address_number') ??
+			(typeof p?.address === 'string' ? p.address : undefined),
+		street:
+			ctxField(ctx, 'street', 'name') ??
+			ctxField(ctx, 'address', 'street_name'),
+		unit: featureType === 'secondary_address' ? label : undefined,
 		locality:
 			ctxField(ctx, 'place', 'name') ?? ctxField(ctx, 'locality', 'name'),
+		neighborhood: ctxField(ctx, 'neighborhood', 'name'),
+		county: ctxField(ctx, 'district', 'name'),
 		region: ctxField(ctx, 'region', 'name'),
 		postcode: ctxField(ctx, 'postcode', 'name'),
 		country: ctxField(ctx, 'country', 'name'),
@@ -97,9 +108,7 @@ function featureToPlace(f: Feature): Place | null {
 
 	const formatted =
 		p?.full_address ??
-		[p?.name_preferred ?? p?.name, p?.place_formatted]
-			.filter(Boolean)
-			.join(', ') ??
+		[label, p?.place_formatted].filter(Boolean).join(', ') ??
 		`${coords.lat},${coords.lng}`
 
 	return {
@@ -109,6 +118,7 @@ function featureToPlace(f: Feature): Place | null {
 		accuracy: mapboxAccuracy(p?.coordinates?.accuracy),
 		provider: 'mapbox',
 		id: p?.mapbox_id ?? f.id,
+		name: featureType && !STREETISH.has(featureType) ? label : undefined,
 	}
 }
 
