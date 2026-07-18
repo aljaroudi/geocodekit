@@ -58,6 +58,7 @@ function requestOpts(opts?: LookupOptsBase) {
 		language: opts?.language,
 		signal: opts?.signal,
 		timeoutMs: opts?.timeoutMs,
+		permanent: opts?.permanent,
 	}
 }
 

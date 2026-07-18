@@ -188,6 +188,7 @@ export function mapbox({ apiKey }: MapboxOptions): BatchProvider {
 		const url = new URL('https://api.mapbox.com/search/geocode/v6/forward')
 		url.searchParams.set('access_token', apiKey)
 		url.searchParams.set('limit', '1')
+		if (opts?.permanent) url.searchParams.set('permanent', 'true')
 		if (opts?.country)
 			url.searchParams.set('country', opts.country.toLowerCase())
 		if (opts?.language) url.searchParams.set('language', opts.language)
@@ -214,6 +215,7 @@ export function mapbox({ apiKey }: MapboxOptions): BatchProvider {
 		url.searchParams.set('longitude', String(coords.lng))
 		url.searchParams.set('latitude', String(coords.lat))
 		url.searchParams.set('limit', '1')
+		if (opts?.permanent) url.searchParams.set('permanent', 'true')
 		if (opts?.country)
 			url.searchParams.set('country', opts.country.toLowerCase())
 		if (opts?.language) url.searchParams.set('language', opts.language)
@@ -231,8 +233,7 @@ export function mapbox({ apiKey }: MapboxOptions): BatchProvider {
 		opts?: ProviderRequestOpts,
 	): Promise<GeoResult<Place>[]> {
 		const json = await safeJson(
-			'https://api.mapbox.com/search/geocode/v6/batch?access_token=' +
-				encodeURIComponent(apiKey),
+			`https://api.mapbox.com/search/geocode/v6/batch?access_token=${encodeURIComponent(apiKey)}${opts?.permanent ? '&permanent=true' : ''}`,
 			{
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -268,8 +269,7 @@ export function mapbox({ apiKey }: MapboxOptions): BatchProvider {
 			...(opts?.language ? { language: opts.language } : {}),
 		}))
 		const json = await safeJson(
-			'https://api.mapbox.com/search/geocode/v6/batch?access_token=' +
-				encodeURIComponent(apiKey),
+			`https://api.mapbox.com/search/geocode/v6/batch?access_token=${encodeURIComponent(apiKey)}${opts?.permanent ? '&permanent=true' : ''}`,
 			{
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
