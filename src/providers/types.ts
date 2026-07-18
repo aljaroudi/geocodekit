@@ -12,7 +12,7 @@ export type ApiKeyOptions = { apiKey: string }
 
 export type ProviderRequestOpts = Pick<
 	LookupOpts,
-	'country' | 'language' | 'signal' | 'timeoutMs'
+	'country' | 'language' | 'signal' | 'timeoutMs' | 'permanent'
 >
 
 export type Provider = {

@@ -152,6 +152,11 @@ export type LookupOptsBase = {
 	language?: string
 	signal?: AbortSignal
 	timeoutMs?: number
+	/**
+	 * Mapbox only: `true` grants rights to store/cache results (billed higher).
+	 * Default `false` (temporary, no caching). Ignored by providers without a storage flag.
+	 */
+	permanent?: boolean
 	mode?: ArrayMode
 	rateLimit?: RateLimit
 	concurrency?: number

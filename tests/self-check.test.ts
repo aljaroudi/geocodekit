@@ -310,6 +310,25 @@ test('mapbox address uses context street not feature name', async () => {
 	)
 })
 
+test('mapbox permanent query param', async () => {
+	const empty = { type: 'FeatureCollection', features: [] }
+	const urls: string[] = []
+	const prev = globalThis.fetch
+	globalThis.fetch = (async (input: RequestInfo | URL) => {
+		urls.push(String(input))
+		return Response.json(empty)
+	}) as unknown as typeof fetch
+	try {
+		const geo = createGeocoder({ providers: [mapbox({ apiKey: 'x' })] })
+		await geo.geocode('Berlin')
+		await geo.geocode('Berlin', { permanent: true })
+		expect(urls[0]).not.toContain('permanent=')
+		expect(urls[1]).toContain('permanent=true')
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
 test('geocod maps addressee county unit id', async () => {
 	await withFetch(
 		{
