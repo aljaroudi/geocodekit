@@ -1,6 +1,7 @@
 import * as z from 'zod/mini'
 import { safeJson } from '../fetch.js'
 import { mapboxAccuracy } from '../map/accuracy.js'
+import { isValidCoords } from '../refine.js'
 import { err, ok } from '../result.js'
 import type {
 	AddressComponents,
@@ -54,7 +55,241 @@ const batchSchema = z.object({
 	batch: z.optional(z.array(collectionSchema)),
 })
 
+const positionSchema = z.tuple([z.number(), z.number()])
+const geometrySchema = z.union([
+	z.string(),
+	z.object({
+		type: z.literal('LineString'),
+		coordinates: z.array(positionSchema),
+	}),
+])
+const waypointSchema = z.object({
+	name: z.string(),
+	location: positionSchema,
+	distance: z.optional(z.number()),
+})
+const maxspeedSchema = z.union([
+	z.object({ speed: z.number(), unit: z.string() }),
+	z.object({ unknown: z.literal(true) }),
+])
+const annotationSchema = z.object({
+	distance: z.optional(z.array(z.number())),
+	duration: z.optional(z.array(z.number())),
+	speed: z.optional(z.array(z.number())),
+	congestion: z.optional(z.array(z.string())),
+	congestion_numeric: z.optional(z.array(z.number())),
+	maxspeed: z.optional(z.array(maxspeedSchema)),
+})
+const maneuverSchema = z.object({
+	type: z.string(),
+	instruction: z.string(),
+	location: positionSchema,
+	bearing_before: z.optional(z.number()),
+	bearing_after: z.optional(z.number()),
+	modifier: z.optional(z.string()),
+})
+const stepSchema = z.object({
+	distance: z.number(),
+	duration: z.number(),
+	weight: z.number(),
+	name: z.string(),
+	mode: z.string(),
+	driving_side: z.string(),
+	geometry: geometrySchema,
+	maneuver: maneuverSchema,
+})
+const legSchema = z.object({
+	summary: z.string(),
+	distance: z.number(),
+	duration: z.number(),
+	weight: z.number(),
+	steps: z.array(stepSchema),
+	annotation: z.optional(annotationSchema),
+})
+const routeShape = {
+	weight_name: z.string(),
+	weight: z.number(),
+	duration: z.number(),
+	distance: z.number(),
+	geometry: z.optional(geometrySchema),
+	legs: z.array(legSchema),
+	waypoints: z.optional(z.array(waypointSchema)),
+}
+const directionsSchema = z.object({
+	code: z.literal('Ok'),
+	routes: z.array(z.object(routeShape)),
+	waypoints: z.optional(z.array(waypointSchema)),
+	uuid: z.optional(z.string()),
+})
+const tracepointSchema = z.object({
+	name: z.string(),
+	location: positionSchema,
+	distance: z.optional(z.number()),
+	alternatives_count: z.optional(z.number()),
+	waypoint_index: z.optional(z.nullable(z.number())),
+	matchings_index: z.optional(z.number()),
+})
+const matchingSchema = z.object({
+	code: z.literal('Ok'),
+	matchings: z.array(
+		z.object({
+			...routeShape,
+			weight_name: z.optional(z.string()),
+			weight: z.optional(z.number()),
+			confidence: z.number(),
+		}),
+	),
+	tracepoints: z.array(z.nullable(tracepointSchema)),
+})
+const navigationErrorSchema = z.object({
+	code: z.string(),
+	message: z.optional(z.string()),
+})
+
 type Feature = z.infer<typeof featureSchema>
+
+export type MapboxProfile =
+	| 'driving'
+	| 'driving-traffic'
+	| 'walking'
+	| 'cycling'
+export type MapboxGeometryFormat = 'geojson' | 'polyline' | 'polyline6'
+export type MapboxOverview = 'full' | 'simplified' | false
+export type MapboxAnnotationType =
+	| 'distance'
+	| 'duration'
+	| 'speed'
+	| 'congestion'
+	| 'congestion_numeric'
+	| 'maxspeed'
+export type MapboxApproach = 'curb' | 'unrestricted'
+export type MapboxExclude =
+	| 'motorway'
+	| 'toll'
+	| 'ferry'
+	| 'unpaved'
+	| 'cash_only_tolls'
+	| 'country_border'
+	| 'state_border'
+	| 'tunnel'
+
+export type MapboxNavigationOptions = {
+	profile?: MapboxProfile
+	annotations?: readonly MapboxAnnotationType[]
+	approaches?: readonly (MapboxApproach | null)[]
+	geometries?: MapboxGeometryFormat
+	overview?: MapboxOverview
+	radiuses?: readonly (number | 'unlimited' | null)[]
+	steps?: boolean
+	language?: string
+	signal?: AbortSignal
+	timeoutMs?: number
+}
+
+export type MapboxDirectionsOptions = MapboxNavigationOptions & {
+	alternatives?: boolean
+	bearings?: readonly (readonly [number, number] | null)[]
+	exclude?: readonly MapboxExclude[]
+	continueStraight?: boolean
+	departAt?: string
+	arriveBy?: string
+}
+
+export type MapboxMapMatchingOptions = Omit<
+	MapboxNavigationOptions,
+	'radiuses'
+> & {
+	radiuses?: readonly (number | null)[]
+	timestamps?: readonly number[]
+	tidy?: boolean
+	waypoints?: readonly number[]
+}
+
+export type MapboxLineString = {
+	type: 'LineString'
+	coordinates: [number, number][]
+}
+export type MapboxGeometry = string | MapboxLineString
+export type MapboxWaypoint = {
+	name: string
+	location: [number, number]
+	distance?: number
+}
+export type MapboxAnnotation = {
+	distance?: number[]
+	duration?: number[]
+	speed?: number[]
+	congestion?: string[]
+	congestion_numeric?: number[]
+	maxspeed?: Array<{ speed: number; unit: string } | { unknown: true }>
+}
+export type MapboxManeuver = {
+	type: string
+	instruction: string
+	location: [number, number]
+	bearing_before?: number
+	bearing_after?: number
+	modifier?: string
+}
+export type MapboxRouteStep = {
+	distance: number
+	duration: number
+	weight: number
+	name: string
+	mode: string
+	driving_side: string
+	geometry: MapboxGeometry
+	maneuver: MapboxManeuver
+}
+export type MapboxRouteLeg = {
+	summary: string
+	distance: number
+	duration: number
+	weight: number
+	steps: MapboxRouteStep[]
+	annotation?: MapboxAnnotation
+}
+export type MapboxRoute = {
+	weight_name: string
+	weight: number
+	duration: number
+	distance: number
+	geometry?: MapboxGeometry
+	legs: MapboxRouteLeg[]
+	waypoints?: MapboxWaypoint[]
+}
+export type MapboxDirectionsResponse = {
+	code: 'Ok'
+	routes: MapboxRoute[]
+	waypoints?: MapboxWaypoint[]
+	uuid?: string
+}
+export type MapboxTracepoint = MapboxWaypoint & {
+	alternatives_count?: number
+	waypoint_index?: number | null
+	matchings_index?: number
+}
+export type MapboxMatching = Omit<MapboxRoute, 'weight' | 'weight_name'> & {
+	weight?: number
+	weight_name?: string
+	confidence: number
+}
+export type MapboxMapMatchingResponse = {
+	code: 'Ok'
+	matchings: MapboxMatching[]
+	tracepoints: (MapboxTracepoint | null)[]
+}
+
+export type MapboxClient = BatchProvider & {
+	directions(
+		coords: Coords[],
+		opts?: MapboxDirectionsOptions,
+	): Promise<GeoResult<MapboxDirectionsResponse>>
+	mapMatch(
+		coords: Coords[],
+		opts?: MapboxMapMatchingOptions,
+	): Promise<GeoResult<MapboxMapMatchingResponse>>
+}
 
 function ctxField(
 	ctx: Record<string, unknown> | undefined,
@@ -178,9 +413,83 @@ function forwardBody(
 	}
 }
 
+const PROFILES = new Set<MapboxProfile>([
+	'driving',
+	'driving-traffic',
+	'walking',
+	'cycling',
+])
+const NOT_FOUND_CODES = new Set(['NoRoute', 'NoMatch', 'NoSegment'] as const)
+
+function badRequest(message: string): GeoResult<never> {
+	return err({ code: 'BAD_REQUEST', message, provider: 'mapbox' })
+}
+
+function validateNavigation(
+	coords: Coords[],
+	opts: MapboxNavigationOptions | undefined,
+	max: number,
+	aligned: readonly (readonly unknown[] | undefined)[],
+): GeoResult<never> | null {
+	if (coords.length < 2 || coords.length > max)
+		return badRequest(`Expected 2-${max} coordinates`)
+	if (!coords.every(isValidCoords)) return badRequest('Invalid coordinates')
+	if (opts?.profile && !PROFILES.has(opts.profile))
+		return badRequest('Invalid profile')
+	if (aligned.some((values) => values && values.length !== coords.length))
+		return badRequest('Coordinate option lengths must match coordinates')
+	return null
+}
+
+function setSharedParams(
+	params: URLSearchParams,
+	opts: MapboxNavigationOptions | undefined,
+): void {
+	if (opts?.annotations?.length)
+		params.set('annotations', opts.annotations.join(','))
+	if (opts?.approaches)
+		params.set('approaches', opts.approaches.map((x) => x ?? '').join(';'))
+	if (opts?.geometries) params.set('geometries', opts.geometries)
+	if (opts?.overview !== undefined)
+		params.set('overview', String(opts.overview))
+	if (opts?.radiuses)
+		params.set('radiuses', opts.radiuses.map((x) => x ?? '').join(';'))
+	if (opts?.steps !== undefined) params.set('steps', String(opts.steps))
+	if (opts?.language) params.set('language', opts.language)
+}
+
+function coordinatesPath(coords: Coords[]): string {
+	return coords.map(({ lng, lat }) => `${lng},${lat}`).join(';')
+}
+
+function parseNavigation<T>(
+	json: unknown,
+	schema: z.ZodMiniType,
+	label: string,
+): GeoResult<T> {
+	const apiError = z.safeParse(navigationErrorSchema, json)
+	if (apiError.success && apiError.data.code !== 'Ok') {
+		return err({
+			code: NOT_FOUND_CODES.has(apiError.data.code)
+				? 'NOT_FOUND'
+				: 'BAD_REQUEST',
+			message: apiError.data.message ?? apiError.data.code,
+			provider: 'mapbox',
+		})
+	}
+	if (!z.safeParse(schema, json).success) {
+		return err({
+			code: 'BAD_RESPONSE',
+			message: `Invalid Mapbox ${label} response`,
+			provider: 'mapbox',
+		})
+	}
+	return ok(json as T)
+}
+
 export type MapboxOptions = ApiKeyOptions
 
-export function mapbox({ apiKey }: MapboxOptions): BatchProvider {
+export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 	async function geocode(
 		query: AddressQuery,
 		opts?: ProviderRequestOpts,
@@ -295,6 +604,130 @@ export function mapbox({ apiKey }: MapboxOptions): BatchProvider {
 		)
 	}
 
+	async function directions(
+		coords: Coords[],
+		opts?: MapboxDirectionsOptions,
+	): Promise<GeoResult<MapboxDirectionsResponse>> {
+		const invalid = validateNavigation(coords, opts, 25, [
+			opts?.radiuses,
+			opts?.approaches,
+			opts?.bearings,
+		])
+		if (invalid) return invalid
+		if (
+			opts?.radiuses?.some(
+				(x) =>
+					x !== null && x !== 'unlimited' && (!Number.isFinite(x) || x <= 0),
+			)
+		)
+			return badRequest('Invalid radiuses')
+		if (
+			opts?.bearings?.some(
+				(x) =>
+					x !== null &&
+					(!Number.isFinite(x[0]) ||
+						x[0] < 0 ||
+						x[0] > 360 ||
+						!Number.isFinite(x[1]) ||
+						x[1] < 0 ||
+						x[1] > 180),
+			)
+		)
+			return badRequest('Invalid bearings')
+
+		const profile = opts?.profile ?? 'driving'
+		const url = new URL(
+			`https://api.mapbox.com/directions/v5/mapbox/${profile}/${coordinatesPath(coords)}`,
+		)
+		url.searchParams.set('access_token', apiKey)
+		setSharedParams(url.searchParams, opts)
+		if (opts?.alternatives !== undefined)
+			url.searchParams.set('alternatives', String(opts.alternatives))
+		if (opts?.bearings)
+			url.searchParams.set(
+				'bearings',
+				opts.bearings.map((x) => (x ? x.join(',') : '')).join(';'),
+			)
+		if (opts?.exclude?.length)
+			url.searchParams.set('exclude', opts.exclude.join(','))
+		if (opts?.continueStraight !== undefined)
+			url.searchParams.set('continue_straight', String(opts.continueStraight))
+		if (opts?.departAt) url.searchParams.set('depart_at', opts.departAt)
+		if (opts?.arriveBy) url.searchParams.set('arrive_by', opts.arriveBy)
+
+		const json = await safeJson(url, {
+			provider: 'mapbox',
+			signal: opts?.signal,
+			timeoutMs: opts?.timeoutMs,
+		})
+		if (json.error) return json
+		return parseNavigation(json.data, directionsSchema, 'directions')
+	}
+
+	async function mapMatch(
+		coords: Coords[],
+		opts?: MapboxMapMatchingOptions,
+	): Promise<GeoResult<MapboxMapMatchingResponse>> {
+		const invalid = validateNavigation(coords, opts, 100, [
+			opts?.radiuses,
+			opts?.timestamps,
+		])
+		if (invalid) return invalid
+		if (
+			opts?.approaches &&
+			opts.approaches.length !== (opts.waypoints?.length ?? coords.length)
+		)
+			return badRequest('Approaches length must match waypoints')
+		if (
+			opts?.radiuses?.some(
+				(x) => x !== null && (!Number.isFinite(x) || x < 0 || x > 50),
+			)
+		)
+			return badRequest('Invalid radiuses')
+		if (
+			opts?.timestamps?.some(
+				(x, i, all) =>
+					!Number.isInteger(x) || x < 0 || (i > 0 && x <= (all[i - 1] ?? -1)),
+			)
+		)
+			return badRequest('Invalid timestamps')
+		if (
+			opts?.waypoints &&
+			(opts.waypoints.length < 2 ||
+				opts.waypoints[0] !== 0 ||
+				opts.waypoints.at(-1) !== coords.length - 1 ||
+				opts.waypoints.some(
+					(x, i, all) =>
+						!Number.isInteger(x) ||
+						x < 0 ||
+						x >= coords.length ||
+						(i > 0 && x <= (all[i - 1] ?? -1)),
+				))
+		)
+			return badRequest('Invalid waypoints')
+
+		const profile = opts?.profile ?? 'driving'
+		const url = new URL(
+			`https://api.mapbox.com/matching/v5/mapbox/${profile}/${coordinatesPath(coords)}.json`,
+		)
+		url.searchParams.set('access_token', apiKey)
+		setSharedParams(url.searchParams, opts)
+		if (opts?.timestamps)
+			url.searchParams.set('timestamps', opts.timestamps.join(';'))
+		if (opts?.tidy !== undefined)
+			url.searchParams.set('tidy', String(opts.tidy))
+		if (opts?.waypoints)
+			url.searchParams.set('waypoints', opts.waypoints.join(';'))
+
+		const json = await safeJson(url, {
+			provider: 'mapbox',
+			signal: opts?.signal,
+			timeoutMs: opts?.timeoutMs,
+		})
+		if (json.error) return json
+		return parseNavigation(json.data, matchingSchema, 'map matching')
+	}
+
 	return {
 		name: 'mapbox',
 		defaultRateLimit: { maxPerMinute: 1000 },
@@ -302,5 +735,7 @@ export function mapbox({ apiKey }: MapboxOptions): BatchProvider {
 		reverseGeocode,
 		geocodeBatch,
 		reverseGeocodeBatch,
+		directions,
+		mapMatch,
 	}
 }

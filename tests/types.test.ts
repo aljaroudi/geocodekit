@@ -5,7 +5,13 @@ import { google } from '../src/google.js'
 import { mapbox } from '../src/mapbox.js'
 import type { Provider } from '../src/providers/types.js'
 import { ok } from '../src/result.js'
-import type { Place } from '../src/types.js'
+import type { Coords, GeoResult, Place } from '../src/types.js'
+import type {
+	MapboxDirectionsOptions,
+	MapboxDirectionsResponse,
+	MapboxMapMatchingOptions,
+	MapboxMapMatchingResponse,
+} from '../src/mapbox.js'
 
 test('mode batch allowed when a provider supports batch', () => {
 	const geo = createGeocoder({ providers: [mapbox({ apiKey: 'x' })] })
@@ -81,4 +87,18 @@ test('require narrows name and new components', async () => {
 
 	// @ts-expect-error bbox is not a RequireKey
 	void geo.geocode('x', { require: ['bbox'] })
+})
+
+test('mapbox navigation methods expose typed results', () => {
+	const client = mapbox({ apiKey: 'x' })
+	const directions: (
+		coords: Coords[],
+		opts?: MapboxDirectionsOptions,
+	) => Promise<GeoResult<MapboxDirectionsResponse>> = client.directions
+	const mapMatch: (
+		coords: Coords[],
+		opts?: MapboxMapMatchingOptions,
+	) => Promise<GeoResult<MapboxMapMatchingResponse>> = client.mapMatch
+	expect(typeof directions).toBe('function')
+	expect(typeof mapMatch).toBe('function')
 })
