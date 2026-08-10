@@ -1,6 +1,14 @@
 import * as z from 'zod/mini'
 import { safeFetch, safeJson } from '../fetch.js'
 import { mapboxAccuracy } from '../map/accuracy.js'
+import {
+	normalizeOptimizationSolution,
+	type OptimizationProblem,
+	type OptimizationProvider,
+	type OptimizationSolution,
+	type OptimizeOptions,
+	validateOptimizationProblem,
+} from '../optimization.js'
 import { isValidCoords } from '../refine.js'
 import { err, ok } from '../result.js'
 import type {
@@ -401,36 +409,37 @@ export type MapboxOptimizationRequestOptions = {
 	signal?: AbortSignal
 	timeoutMs?: number
 }
-export type MapboxOptimizeOptions = MapboxOptimizationRequestOptions & {
+export type MapboxOptimizeV2Options = MapboxOptimizationRequestOptions & {
 	pollIntervalMs?: number
 	maxWaitMs?: number
 }
 
-export type MapboxClient = BatchProvider & {
-	directions(
-		coords: Coords[],
-		opts?: MapboxDirectionsOptions,
-	): Promise<GeoResult<MapboxDirectionsResponse>>
-	mapMatch(
-		coords: Coords[],
-		opts?: MapboxMapMatchingOptions,
-	): Promise<GeoResult<MapboxMapMatchingResponse>>
-	submitOptimization(
-		problem: MapboxOptimizationProblem,
-		opts?: MapboxOptimizationRequestOptions,
-	): Promise<GeoResult<MapboxOptimizationSubmission>>
-	getOptimization(
-		id: string,
-		opts?: MapboxOptimizationRequestOptions,
-	): Promise<GeoResult<MapboxOptimizationPoll>>
-	listOptimizations(
-		opts?: MapboxOptimizationRequestOptions,
-	): Promise<GeoResult<MapboxOptimizationSubmission[]>>
-	optimize(
-		problem: MapboxOptimizationProblem,
-		opts?: MapboxOptimizeOptions,
-	): Promise<GeoResult<MapboxOptimizationSolution>>
-}
+export type MapboxClient = BatchProvider &
+	OptimizationProvider & {
+		directions(
+			coords: Coords[],
+			opts?: MapboxDirectionsOptions,
+		): Promise<GeoResult<MapboxDirectionsResponse>>
+		mapMatch(
+			coords: Coords[],
+			opts?: MapboxMapMatchingOptions,
+		): Promise<GeoResult<MapboxMapMatchingResponse>>
+		submitOptimization(
+			problem: MapboxOptimizationProblem,
+			opts?: MapboxOptimizationRequestOptions,
+		): Promise<GeoResult<MapboxOptimizationSubmission>>
+		getOptimization(
+			id: string,
+			opts?: MapboxOptimizationRequestOptions,
+		): Promise<GeoResult<MapboxOptimizationPoll>>
+		listOptimizations(
+			opts?: MapboxOptimizationRequestOptions,
+		): Promise<GeoResult<MapboxOptimizationSubmission[]>>
+		optimizeV2(
+			problem: MapboxOptimizationProblem,
+			opts?: MapboxOptimizeV2Options,
+		): Promise<GeoResult<MapboxOptimizationSolution>>
+	}
 
 function ctxField(
 	ctx: Record<string, unknown> | undefined,
@@ -1025,9 +1034,9 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 		)
 	}
 
-	async function optimize(
+	async function optimizeV2(
 		problem: MapboxOptimizationProblem,
-		opts?: MapboxOptimizeOptions,
+		opts?: MapboxOptimizeV2Options,
 	): Promise<GeoResult<MapboxOptimizationSolution>> {
 		const pollIntervalMs = opts?.pollIntervalMs ?? 1000
 		if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 1000)
@@ -1070,6 +1079,73 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 		}
 	}
 
+	async function optimize(
+		problem: OptimizationProblem,
+		opts?: OptimizeOptions,
+	): Promise<GeoResult<OptimizationSolution>> {
+		const invalid = validateOptimizationProblem(problem, opts, 'mapbox')
+		if (invalid) return invalid
+		const stopNames = problem.stops.map((_, index) => `stop-${index}`)
+		const solution = await optimizeV2(
+			{
+				version: 1,
+				locations: [
+					...problem.stops.map((stop, index) => ({
+						name: stopNames[index] as string,
+						coordinates: [stop.coordinates.lng, stop.coordinates.lat] as const,
+					})),
+					...(problem.start
+						? [
+								{
+									name: 'route-start',
+									coordinates: [problem.start.lng, problem.start.lat] as const,
+								},
+							]
+						: []),
+					...(problem.end
+						? [
+								{
+									name: 'route-end',
+									coordinates: [problem.end.lng, problem.end.lat] as const,
+								},
+							]
+						: []),
+				],
+				vehicles: [
+					{
+						name: 'vehicle',
+						routing_profile: 'mapbox/driving',
+						start_location: problem.start ? 'route-start' : undefined,
+						end_location: problem.end ? 'route-end' : undefined,
+					},
+				],
+				services: stopNames.map(name => ({ name, location: name })),
+				options: { objectives: ['min-total-travel-duration'] },
+			},
+			{
+				signal: opts?.signal,
+				timeoutMs: opts?.timeoutMs,
+				maxWaitMs: opts?.timeoutMs,
+			},
+		)
+		if (solution.error) return solution
+		const ids = new Map(
+			stopNames.map((name, index) => [
+				name,
+				problem.stops[index]?.id as string,
+			]),
+		)
+		return normalizeOptimizationSolution(
+			problem,
+			solution.data.routes
+				.flatMap(route => route.stops)
+				.flatMap(stop => stop.services ?? [])
+				.map(name => ids.get(name) ?? name),
+			solution.data.dropped.services.map(name => ids.get(name) ?? name),
+			'mapbox',
+		)
+	}
+
 	return {
 		name: 'mapbox',
 		defaultRateLimit: { maxPerMinute: 1000 },
@@ -1083,5 +1159,6 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 		getOptimization,
 		listOptimizations,
 		optimize,
+		optimizeV2,
 	}
 }

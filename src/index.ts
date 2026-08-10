@@ -4,6 +4,13 @@ export {
 	type Geocoder,
 } from './createGeocoder.js'
 export type {
+	OptimizationProblem,
+	OptimizationProvider,
+	OptimizationSolution,
+	OptimizationStop,
+	OptimizeOptions,
+} from './optimization.js'
+export type {
 	ApiKeyOptions,
 	BatchProvider,
 	Provider,

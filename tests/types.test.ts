@@ -3,6 +3,11 @@ import { createGeocoder } from '../src/createGeocoder.js'
 import { geocod } from '../src/geocod.js'
 import { google } from '../src/google.js'
 import type {
+	OptimizationProblem,
+	OptimizationProvider,
+	OptimizationSolution,
+} from '../src/index.js'
+import type {
 	MapboxDirectionsOptions,
 	MapboxDirectionsResponse,
 	MapboxMapMatchingOptions,
@@ -186,11 +191,31 @@ test('mapbox optimization methods expose wire types', () => {
 		client.getOptimization
 	const list: () => Promise<GeoResult<MapboxOptimizationSubmission[]>> =
 		client.listOptimizations
-	const optimize: (
+	const optimizeV2: (
 		problem: MapboxOptimizationProblem,
-	) => Promise<GeoResult<MapboxOptimizationSolution>> = client.optimize
+	) => Promise<GeoResult<MapboxOptimizationSolution>> = client.optimizeV2
 	expect(
-		[submit, get, list, optimize].every(fn => typeof fn === 'function'),
+		[submit, get, list, optimizeV2].every(fn => typeof fn === 'function'),
 	).toBe(true)
 	expect(problem.version).toBe(1)
+})
+
+test('optimization providers share normalized types', () => {
+	const problem = {
+		stops: [
+			{ id: 'a', coordinates: { lat: 24.7, lng: 46.6 } },
+			{ id: 'b', coordinates: { lat: 24.8, lng: 46.7 } },
+		],
+		start: { lat: 24.6, lng: 46.5 },
+		end: { lat: 24.9, lng: 46.8 },
+	} as const satisfies OptimizationProblem
+	const providers: OptimizationProvider[] = [
+		mapbox({ apiKey: 'x' }),
+		google({ apiKey: 'x', projectId: 'project' }),
+	]
+	const methods: Array<
+		(problem: OptimizationProblem) => Promise<GeoResult<OptimizationSolution>>
+	> = providers.map(provider => provider.optimize)
+	expect(methods.every(method => typeof method === 'function')).toBe(true)
+	expect(problem.stops[0].id).toBe('a')
 })

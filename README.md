@@ -102,7 +102,34 @@ const match = await mapboxClient.mapMatch(gpsTrace, {
 })
 ```
 
-Optimization v2 is a beta API and requires account access. Problems use Mapbox's wire format, including snake_case fields and `[longitude, latitude]` coordinates.
+### Route optimization
+
+Mapbox and Google clients share one single-vehicle API. Stops use normal `{ lat, lng }` coordinates; results contain the optimized stop ids and any dropped ids.
+
+```ts
+const problem = {
+  stops: [
+    { id: 'a', coordinates: { lat: 24.7136, lng: 46.6753 } },
+    { id: 'b', coordinates: { lat: 24.72, lng: 46.7 } },
+  ],
+  start: { lat: 24.7, lng: 46.6 }, // optional fixed start
+  end: { lat: 24.8, lng: 46.8 },   // optional fixed end
+}
+
+const googleClient = google({
+  apiKey: GOOGLE_MAPS_KEY,
+  projectId: GOOGLE_CLOUD_PROJECT,
+})
+const result = await googleClient.optimize(problem, { timeoutMs: 60_000 })
+if (!result.error) console.log(result.data.order, result.data.dropped)
+
+// Same problem and result types. Mapbox Optimization v2 access is required.
+await mapboxClient.optimize(problem, { timeoutMs: 60_000 })
+```
+
+Enable Google's Route Optimization API and billing for `projectId`. The normalized API supports 2–1,000 stops, one driving vehicle, and optional fixed start/end points. See [Google Route Optimization](https://developers.google.com/maps/documentation/route-optimization/overview), [timeouts](https://developers.google.com/maps/documentation/route-optimization/timeouts), and [usage and billing](https://developers.google.com/maps/documentation/route-optimization/usage-and-billing).
+
+Mapbox Optimization v2 is beta and requires account access. Use `optimizeV2` when the full Mapbox wire format is needed, including multiple vehicles, services, or shipments.
 
 ```ts
 const problem = {
@@ -120,7 +147,7 @@ const problem = {
 } as const
 
 // Submit and poll until complete (at most 60 status requests/minute).
-const solution = await mapboxClient.optimize(problem, { maxWaitMs: 60_000 })
+const solution = await mapboxClient.optimizeV2(problem, { maxWaitMs: 60_000 })
 
 // Or control the asynchronous lifecycle yourself.
 const submission = await mapboxClient.submitOptimization(problem)

@@ -223,6 +223,92 @@ test('google maps unit county neighborhood', async () => {
 	)
 })
 
+test('google optimize sends one vehicle and normalizes its route', async () => {
+	let request: { url: URL; init?: RequestInit } | undefined
+	const prev = globalThis.fetch
+	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+		request = { url: new URL(String(input)), init }
+		return Response.json({
+			routes: [{ visits: [{ shipmentIndex: 1 }, { shipmentIndex: 0 }] }],
+			skippedShipments: [],
+		})
+	}) as unknown as typeof fetch
+	try {
+		const problem = {
+			stops: [
+				{ id: 'a', coordinates: { lat: 24.7, lng: 46.6 } },
+				{ id: 'b', coordinates: { lat: 24.8, lng: 46.7 } },
+			],
+			start: { lat: 24.6, lng: 46.5 },
+			end: { lat: 24.9, lng: 46.8 },
+		}
+		const result = await google({
+			apiKey: 'key',
+			projectId: 'my-project',
+		}).optimize(problem, { timeoutMs: 45_500 })
+		expect(result.data).toEqual({ order: ['b', 'a'], dropped: [] })
+		expect(request?.url.pathname).toBe('/v1/projects/my-project:optimizeTours')
+		expect(request?.init?.method).toBe('POST')
+		expect(request?.init?.headers).toEqual({
+			'Content-Type': 'application/json',
+			'X-Goog-Api-Key': 'key',
+			'X-Server-Timeout': '46',
+		})
+		expect(JSON.parse(String(request?.init?.body))).toEqual({
+			timeout: '46s',
+			model: {
+				shipments: [
+					{
+						deliveries: [
+							{
+								arrivalLocation: { latitude: 24.7, longitude: 46.6 },
+							},
+						],
+					},
+					{
+						deliveries: [
+							{
+								arrivalLocation: { latitude: 24.8, longitude: 46.7 },
+							},
+						],
+					},
+				],
+				vehicles: [
+					{
+						startLocation: { latitude: 24.6, longitude: 46.5 },
+						endLocation: { latitude: 24.9, longitude: 46.8 },
+						costPerTraveledHour: 1,
+					},
+				],
+			},
+		})
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
+test('google optimize accepts 1000 stops', async () => {
+	const stops = Array.from({ length: 1000 }, (_, index) => ({
+		id: String(index),
+		coordinates: { lat: 24 + index / 10000, lng: 46 },
+	}))
+	await withFetch(
+		{
+			routes: [
+				{ visits: stops.map((_, shipmentIndex) => ({ shipmentIndex })) },
+			],
+			skippedShipments: [],
+		},
+		async () => {
+			const result = await google({
+				apiKey: 'x',
+				projectId: 'project',
+			}).optimize({ stops })
+			expect(result.data?.order).toHaveLength(1000)
+		},
+	)
+})
+
 test('mapbox maps street from context and name for place features', async () => {
 	await withFetch(
 		{
@@ -392,6 +478,15 @@ const optimizationSolution: MapboxOptimizationSolution = {
 		},
 	],
 }
+
+const normalizedOptimizationProblem = {
+	stops: [
+		{ id: 'first', coordinates: { lat: 24.7136, lng: 46.6753 } },
+		{ id: 'second', coordinates: { lat: 24.72, lng: 46.7 } },
+	],
+	start: { lat: 24.7, lng: 46.6 },
+	end: { lat: 24.8, lng: 46.8 },
+} as const
 
 test('mapbox directions serializes options and keeps extra fields', async () => {
 	let request = new URL('https://example.com')
@@ -601,7 +696,7 @@ test('mapbox optimization lifecycle', async () => {
 	}
 })
 
-test('mapbox optimize submits and returns completed solution', async () => {
+test('mapbox optimizeV2 submits and returns completed solution', async () => {
 	let calls = 0
 	const prev = globalThis.fetch
 	globalThis.fetch = (async () => {
@@ -611,11 +706,204 @@ test('mapbox optimize submits and returns completed solution', async () => {
 			: Response.json(optimizationSolution)
 	}) as unknown as typeof fetch
 	try {
-		const result = await mapbox({ apiKey: 'x' }).optimize(optimizationProblem)
+		const result = await mapbox({ apiKey: 'x' }).optimizeV2(optimizationProblem)
 		expect(result.data).toEqual(optimizationSolution)
 		expect(calls).toBe(2)
 	} finally {
 		globalThis.fetch = prev
+	}
+})
+
+test('mapbox optimize converts and normalizes a single vehicle route', async () => {
+	let body: Record<string, unknown> | undefined
+	let calls = 0
+	const prev = globalThis.fetch
+	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+		calls++
+		if (calls === 1) {
+			body = JSON.parse(String(init?.body)) as Record<string, unknown>
+			return Response.json({ id: 'job-1', status: 'ok' }, { status: 202 })
+		}
+		return Response.json({
+			dropped: { services: [], shipments: [] },
+			routes: [
+				{
+					vehicle: 'vehicle',
+					stops: [
+						{
+							type: 'service',
+							eta: '2026-08-10T12:00:00Z',
+							services: ['stop-1'],
+						},
+						{
+							type: 'service',
+							eta: '2026-08-10T12:10:00Z',
+							services: ['stop-0'],
+						},
+					],
+				},
+			],
+		})
+	}) as unknown as typeof fetch
+	try {
+		const result = await mapbox({ apiKey: 'x' }).optimize(
+			normalizedOptimizationProblem,
+		)
+		expect(result.data).toEqual({ order: ['second', 'first'], dropped: [] })
+		expect(body).toEqual({
+			version: 1,
+			locations: [
+				{ name: 'stop-0', coordinates: [46.6753, 24.7136] },
+				{ name: 'stop-1', coordinates: [46.7, 24.72] },
+				{ name: 'route-start', coordinates: [46.6, 24.7] },
+				{ name: 'route-end', coordinates: [46.8, 24.8] },
+			],
+			vehicles: [
+				{
+					name: 'vehicle',
+					routing_profile: 'mapbox/driving',
+					start_location: 'route-start',
+					end_location: 'route-end',
+				},
+			],
+			services: [
+				{ name: 'stop-0', location: 'stop-0' },
+				{ name: 'stop-1', location: 'stop-1' },
+			],
+			options: { objectives: ['min-total-travel-duration'] },
+		})
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
+test('shared optimization rejects invalid input without fetching', async () => {
+	let calls = 0
+	const prev = globalThis.fetch
+	globalThis.fetch = (async () => {
+		calls++
+		return Response.json({})
+	}) as unknown as typeof fetch
+	try {
+		const duplicate = {
+			stops: [
+				{ id: 'same', coordinates: { lat: 1, lng: 2 } },
+				{ id: 'same', coordinates: { lat: 3, lng: 4 } },
+			],
+		}
+		const mapboxResult = await mapbox({ apiKey: 'x' }).optimize(duplicate)
+		const googleResult = await google({
+			apiKey: 'x',
+			projectId: 'project',
+		}).optimize(duplicate)
+		const missingProject = await google({ apiKey: 'x' }).optimize(
+			normalizedOptimizationProblem,
+		)
+		const badTimeout = await google({
+			apiKey: 'x',
+			projectId: 'project',
+		}).optimize(normalizedOptimizationProblem, { timeoutMs: 0 })
+
+		expect(mapboxResult.error?.code).toBe('BAD_REQUEST')
+		expect(googleResult.error?.code).toBe('BAD_REQUEST')
+		expect(missingProject.error?.code).toBe('BAD_REQUEST')
+		expect(badTimeout.error?.code).toBe('BAD_REQUEST')
+		expect(calls).toBe(0)
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
+test('optimization rejects incomplete provider stop orders', async () => {
+	await withFetch({ routes: 'bad' }, async () => {
+		const result = await google({
+			apiKey: 'x',
+			projectId: 'project',
+		}).optimize(normalizedOptimizationProblem)
+		expect(result.error?.code).toBe('BAD_RESPONSE')
+	})
+
+	await withFetch(
+		{
+			routes: [{ visits: [{ shipmentIndex: 0 }] }],
+			skippedShipments: [],
+		},
+		async () => {
+			const result = await google({
+				apiKey: 'x',
+				projectId: 'project',
+			}).optimize(normalizedOptimizationProblem)
+			expect(result.error?.code).toBe('BAD_RESPONSE')
+		},
+	)
+
+	let calls = 0
+	const prev = globalThis.fetch
+	globalThis.fetch = (async () => {
+		calls++
+		return calls === 1
+			? Response.json({ id: 'job-1', status: 'ok' }, { status: 202 })
+			: Response.json({
+					dropped: { services: [], shipments: [] },
+					routes: [
+						{
+							vehicle: 'vehicle',
+							stops: [
+								{
+									type: 'service',
+									eta: '2026-08-10T12:00:00Z',
+									services: ['stop-0'],
+								},
+							],
+						},
+					],
+				})
+	}) as unknown as typeof fetch
+	try {
+		const result = await mapbox({ apiKey: 'x' }).optimize(
+			normalizedOptimizationProblem,
+		)
+		expect(result.error?.code).toBe('BAD_RESPONSE')
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
+test('google optimize maps abort, timeout, and HTTP errors', async () => {
+	const client = google({ apiKey: 'x', projectId: 'project' })
+	const abortedController = new AbortController()
+	abortedController.abort()
+	const aborted = await client.optimize(normalizedOptimizationProblem, {
+		signal: abortedController.signal,
+	})
+	expect(aborted.error?.code).toBe('ABORTED')
+
+	const prev = globalThis.fetch
+	globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+		new Promise((_resolve, reject) => {
+			init?.signal?.addEventListener(
+				'abort',
+				() => reject(init.signal?.reason),
+				{ once: true },
+			)
+		})) as unknown as typeof fetch
+	try {
+		const timedOut = await client.optimize(normalizedOptimizationProblem, {
+			timeoutMs: 5,
+		})
+		expect(timedOut.error?.code).toBe('TIMEOUT')
+	} finally {
+		globalThis.fetch = prev
+	}
+
+	const prevRateLimit = globalThis.fetch
+	globalThis.fetch = (async () =>
+		new Response(null, { status: 429 })) as unknown as typeof fetch
+	try {
+		const rateLimited = await client.optimize(normalizedOptimizationProblem)
+		expect(rateLimited.error?.code).toBe('RATE_LIMIT')
+	} finally {
+		globalThis.fetch = prevRateLimit
 	}
 })
 
@@ -634,7 +922,7 @@ test('mapbox optimization validates, aborts, times out, and maps errors', async 
 			...optimizationProblem,
 			locations: [],
 		})
-		const fastPoll = await client.optimize(optimizationProblem, {
+		const fastPoll = await client.optimizeV2(optimizationProblem, {
 			pollIntervalMs: 999,
 		})
 		expect(invalid.error?.code).toBe('BAD_REQUEST')
@@ -643,13 +931,13 @@ test('mapbox optimization validates, aborts, times out, and maps errors', async 
 
 		const ac = new AbortController()
 		ac.abort()
-		const aborted = await client.optimize(optimizationProblem, {
+		const aborted = await client.optimizeV2(optimizationProblem, {
 			signal: ac.signal,
 		})
 		expect(aborted.error?.code).toBe('ABORTED')
 		expect(calls).toBe(0)
 
-		const timedOut = await client.optimize(optimizationProblem, {
+		const timedOut = await client.optimizeV2(optimizationProblem, {
 			maxWaitMs: 1,
 		})
 		expect(timedOut.error?.code).toBe('TIMEOUT')
