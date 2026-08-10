@@ -2,16 +2,20 @@ import { expect, test } from 'bun:test'
 import { createGeocoder } from '../src/createGeocoder.js'
 import { geocod } from '../src/geocod.js'
 import { google } from '../src/google.js'
-import { mapbox } from '../src/mapbox.js'
-import type { Provider } from '../src/providers/types.js'
-import { ok } from '../src/result.js'
-import type { Coords, GeoResult, Place } from '../src/types.js'
 import type {
 	MapboxDirectionsOptions,
 	MapboxDirectionsResponse,
 	MapboxMapMatchingOptions,
 	MapboxMapMatchingResponse,
+	MapboxOptimizationPoll,
+	MapboxOptimizationProblem,
+	MapboxOptimizationSolution,
+	MapboxOptimizationSubmission,
 } from '../src/mapbox.js'
+import { mapbox } from '../src/mapbox.js'
+import type { Provider } from '../src/providers/types.js'
+import { ok } from '../src/result.js'
+import type { Coords, GeoResult, Place } from '../src/types.js'
 
 test('mode batch allowed when a provider supports batch', () => {
 	const geo = createGeocoder({ providers: [mapbox({ apiKey: 'x' })] })
@@ -101,4 +105,92 @@ test('mapbox navigation methods expose typed results', () => {
 	) => Promise<GeoResult<MapboxMapMatchingResponse>> = client.mapMatch
 	expect(typeof directions).toBe('function')
 	expect(typeof mapMatch).toBe('function')
+})
+
+test('mapbox optimization methods expose wire types', () => {
+	const problem = {
+		version: 1,
+		locations: [
+			{ name: 'warehouse', coordinates: [46.6753, 24.7136] },
+			{ name: 'customer', coordinates: [46.7, 24.72] },
+		],
+		vehicles: [
+			{
+				name: 'truck-1',
+				routing_profile: 'mapbox/driving-traffic',
+				start_location: 'warehouse',
+				end_location: 'warehouse',
+				capacities: { boxes: 10 },
+				capabilities: ['refrigeration'],
+				earliest_start: '2026-08-10T09:00:00Z',
+				latest_end: '2026-08-10T17:00:00Z',
+				breaks: [
+					{
+						earliest_start: '2026-08-10T12:00:00Z',
+						latest_end: '2026-08-10T13:00:00Z',
+						duration: 1800,
+					},
+				],
+				loading_policy: 'fifo',
+			},
+		],
+		services: [
+			{
+				name: 'service-1',
+				location: 'customer',
+				duration: 60,
+				requirements: ['refrigeration'],
+				service_times: [
+					{
+						earliest: '2026-08-10T10:00:00Z',
+						latest: '2026-08-10T11:00:00Z',
+						type: 'strict',
+					},
+				],
+			},
+		],
+		shipments: [
+			{
+				name: 'shipment-1',
+				from: 'warehouse',
+				to: 'customer',
+				size: { boxes: 1 },
+				requirements: ['refrigeration'],
+				pickup_duration: 30,
+				dropoff_duration: 60,
+				pickup_times: [
+					{
+						earliest: '2026-08-10T09:00:00Z',
+						latest: '2026-08-10T10:00:00Z',
+						type: 'soft_start',
+					},
+				],
+				dropoff_times: [
+					{
+						earliest: '2026-08-10T10:00:00Z',
+						latest: '2026-08-10T12:00:00Z',
+						type: 'soft_end',
+					},
+				],
+			},
+		],
+		options: { objectives: ['min-total-travel-duration'] },
+	} as const satisfies MapboxOptimizationProblem
+
+	const client = mapbox({ apiKey: 'x' })
+	const submit: (
+		problem: MapboxOptimizationProblem,
+	) => Promise<GeoResult<MapboxOptimizationSubmission>> =
+		client.submitOptimization
+	const get: (id: string) => Promise<GeoResult<MapboxOptimizationPoll>> =
+		client.getOptimization
+	const list: () => Promise<GeoResult<MapboxOptimizationSubmission[]>> =
+		client.listOptimizations
+	const optimize: (
+		problem: MapboxOptimizationProblem,
+	) => Promise<GeoResult<MapboxOptimizationSolution>> = client.optimize
+	expect(
+		[submit, get, list, optimize].every(fn => typeof fn === 'function'),
+	).toBe(true)
+	expect(problem.version).toBe(1)
 })

@@ -1,5 +1,5 @@
 import * as z from 'zod/mini'
-import { safeJson } from '../fetch.js'
+import { safeFetch, safeJson } from '../fetch.js'
 import { mapboxAccuracy } from '../map/accuracy.js'
 import { isValidCoords } from '../refine.js'
 import { err, ok } from '../result.js'
@@ -145,6 +145,39 @@ const navigationErrorSchema = z.object({
 	code: z.string(),
 	message: z.optional(z.string()),
 })
+const optimizationStatusSchema = z.object({
+	id: z.string(),
+	status: z.union([
+		z.literal('pending'),
+		z.literal('processing'),
+		z.literal('complete'),
+		z.literal('ok'),
+	]),
+	status_date: z.optional(z.string()),
+})
+const optimizationStopSchema = z.object({
+	type: z.string(),
+	location: z.optional(z.string()),
+	eta: z.string(),
+	odometer: z.optional(z.number()),
+	wait: z.optional(z.number()),
+	duration: z.optional(z.number()),
+	services: z.optional(z.array(z.string())),
+	pickups: z.optional(z.array(z.string())),
+	dropoffs: z.optional(z.array(z.string())),
+})
+const optimizationSolutionSchema = z.object({
+	dropped: z.object({
+		services: z.array(z.string()),
+		shipments: z.array(z.string()),
+	}),
+	routes: z.array(
+		z.object({
+			vehicle: z.string(),
+			stops: z.array(optimizationStopSchema),
+		}),
+	),
+})
 
 type Feature = z.infer<typeof featureSchema>
 
@@ -280,6 +313,99 @@ export type MapboxMapMatchingResponse = {
 	tracepoints: (MapboxTracepoint | null)[]
 }
 
+export type MapboxOptimizationTimeWindow = {
+	earliest: string
+	latest: string
+	type?: 'strict' | 'soft' | 'soft_start' | 'soft_end'
+}
+export type MapboxOptimizationBreak = {
+	earliest_start: string
+	latest_end: string
+	duration: number
+}
+export type MapboxOptimizationLocation = {
+	name: string
+	coordinates: readonly [number, number]
+}
+export type MapboxOptimizationVehicle = {
+	name: string
+	routing_profile?: `mapbox/${MapboxProfile}`
+	start_location?: string
+	end_location?: string
+	capacities?: Readonly<Record<string, number>>
+	capabilities?: readonly string[]
+	earliest_start?: string
+	latest_end?: string
+	breaks?: readonly MapboxOptimizationBreak[]
+	loading_policy?: 'any' | 'fifo' | 'lifo'
+}
+export type MapboxOptimizationService = {
+	name: string
+	location: string
+	duration?: number
+	requirements?: readonly string[]
+	service_times?: readonly MapboxOptimizationTimeWindow[]
+}
+export type MapboxOptimizationShipment = {
+	name: string
+	from: string
+	to: string
+	size?: Readonly<Record<string, number>>
+	requirements?: readonly string[]
+	pickup_duration?: number
+	dropoff_duration?: number
+	pickup_times?: readonly MapboxOptimizationTimeWindow[]
+	dropoff_times?: readonly MapboxOptimizationTimeWindow[]
+}
+export type MapboxOptimizationOptions = {
+	objectives?: readonly [
+		'min-total-travel-duration' | 'min-schedule-completion-time',
+	]
+}
+export type MapboxOptimizationProblem = {
+	version: 1
+	locations: readonly MapboxOptimizationLocation[]
+	vehicles: readonly MapboxOptimizationVehicle[]
+	services?: readonly MapboxOptimizationService[]
+	shipments?: readonly MapboxOptimizationShipment[]
+	options?: MapboxOptimizationOptions
+}
+export type MapboxOptimizationSubmission = {
+	id: string
+	status: 'pending' | 'processing' | 'complete' | 'ok'
+	status_date?: string
+}
+export type MapboxOptimizationStop = {
+	type: string
+	location?: string
+	eta: string
+	odometer?: number
+	wait?: number
+	duration?: number
+	services?: string[]
+	pickups?: string[]
+	dropoffs?: string[]
+}
+export type MapboxOptimizationRoute = {
+	vehicle: string
+	stops: MapboxOptimizationStop[]
+}
+export type MapboxOptimizationSolution = {
+	dropped: { services: string[]; shipments: string[] }
+	routes: MapboxOptimizationRoute[]
+}
+export type MapboxOptimizationPoll =
+	| { complete: false }
+	| { complete: true; solution: MapboxOptimizationSolution }
+export type MapboxOptimizationRequestOptions = {
+	signal?: AbortSignal
+	timeoutMs?: number
+}
+export type MapboxOptimizeOptions = MapboxOptimizationRequestOptions & {
+	pollIntervalMs?: number
+	maxWaitMs?: number
+}
+
 export type MapboxClient = BatchProvider & {
 	directions(
 		coords: Coords[],
@@ -289,6 +415,21 @@ export type MapboxClient = BatchProvider & {
 		coords: Coords[],
 		opts?: MapboxMapMatchingOptions,
 	): Promise<GeoResult<MapboxMapMatchingResponse>>
+	submitOptimization(
+		problem: MapboxOptimizationProblem,
+		opts?: MapboxOptimizationRequestOptions,
+	): Promise<GeoResult<MapboxOptimizationSubmission>>
+	getOptimization(
+		id: string,
+		opts?: MapboxOptimizationRequestOptions,
+	): Promise<GeoResult<MapboxOptimizationPoll>>
+	listOptimizations(
+		opts?: MapboxOptimizationRequestOptions,
+	): Promise<GeoResult<MapboxOptimizationSubmission[]>>
+	optimize(
+		problem: MapboxOptimizationProblem,
+		opts?: MapboxOptimizeOptions,
+	): Promise<GeoResult<MapboxOptimizationSolution>>
 }
 
 function ctxField(
@@ -436,7 +577,7 @@ function validateNavigation(
 	if (!coords.every(isValidCoords)) return badRequest('Invalid coordinates')
 	if (opts?.profile && !PROFILES.has(opts.profile))
 		return badRequest('Invalid profile')
-	if (aligned.some((values) => values && values.length !== coords.length))
+	if (aligned.some(values => values && values.length !== coords.length))
 		return badRequest('Coordinate option lengths must match coordinates')
 	return null
 }
@@ -448,12 +589,12 @@ function setSharedParams(
 	if (opts?.annotations?.length)
 		params.set('annotations', opts.annotations.join(','))
 	if (opts?.approaches)
-		params.set('approaches', opts.approaches.map((x) => x ?? '').join(';'))
+		params.set('approaches', opts.approaches.map(x => x ?? '').join(';'))
 	if (opts?.geometries) params.set('geometries', opts.geometries)
 	if (opts?.overview !== undefined)
 		params.set('overview', String(opts.overview))
 	if (opts?.radiuses)
-		params.set('radiuses', opts.radiuses.map((x) => x ?? '').join(';'))
+		params.set('radiuses', opts.radiuses.map(x => x ?? '').join(';'))
 	if (opts?.steps !== undefined) params.set('steps', String(opts.steps))
 	if (opts?.language) params.set('language', opts.language)
 }
@@ -485,6 +626,67 @@ function parseNavigation<T>(
 		})
 	}
 	return ok(json as T)
+}
+
+function parseOptimization<T>(
+	json: unknown,
+	schema: z.ZodMiniType,
+	label: string,
+): GeoResult<T> {
+	if (!z.safeParse(schema, json).success) {
+		return err({
+			code: 'BAD_RESPONSE',
+			message: `Invalid Mapbox optimization ${label}`,
+			provider: 'mapbox',
+		})
+	}
+	return ok(json as T)
+}
+
+function validateOptimization(
+	problem: MapboxOptimizationProblem,
+): GeoResult<never> | null {
+	if (!problem || typeof problem !== 'object' || problem.version !== 1)
+		return badRequest('Optimization version must be 1')
+	if (
+		!Array.isArray(problem.locations) ||
+		problem.locations.length < 1 ||
+		problem.locations.length > 1000
+	)
+		return badRequest('Expected 1-1000 optimization locations')
+	if (
+		problem.locations.some(location => {
+			const coordinates = location?.coordinates
+			return (
+				typeof location?.name !== 'string' ||
+				!Array.isArray(coordinates) ||
+				coordinates.length !== 2 ||
+				!isValidCoords({ lng: coordinates[0], lat: coordinates[1] })
+			)
+		})
+	)
+		return badRequest('Invalid optimization locations')
+	if (!Array.isArray(problem.vehicles) || problem.vehicles.length < 1)
+		return badRequest('Expected at least one optimization vehicle')
+	if (
+		(!Array.isArray(problem.services) || problem.services.length === 0) &&
+		(!Array.isArray(problem.shipments) || problem.shipments.length === 0)
+	)
+		return badRequest('Expected at least one service or shipment')
+	return null
+}
+
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.resolve()
+	return new Promise(resolve => {
+		const done = () => {
+			clearTimeout(timer)
+			signal?.removeEventListener('abort', done)
+			resolve()
+		}
+		const timer = setTimeout(done, ms)
+		signal?.addEventListener('abort', done, { once: true })
+	})
 }
 
 export type MapboxOptions = ApiKeyOptions
@@ -546,7 +748,7 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 			{
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(queries.map((q) => forwardBody(q, opts))),
+				body: JSON.stringify(queries.map(q => forwardBody(q, opts))),
 				provider: 'mapbox',
 				signal: opts?.signal,
 				timeoutMs: opts?.timeoutMs,
@@ -570,7 +772,7 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 		coordsList: Coords[],
 		opts?: ProviderRequestOpts,
 	): Promise<GeoResult<Place>[]> {
-		const body = coordsList.map((c) => ({
+		const body = coordsList.map(c => ({
 			longitude: c.lng,
 			latitude: c.lat,
 			limit: 1,
@@ -616,14 +818,13 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 		if (invalid) return invalid
 		if (
 			opts?.radiuses?.some(
-				(x) =>
-					x !== null && x !== 'unlimited' && (!Number.isFinite(x) || x <= 0),
+				x => x !== null && x !== 'unlimited' && (!Number.isFinite(x) || x <= 0),
 			)
 		)
 			return badRequest('Invalid radiuses')
 		if (
 			opts?.bearings?.some(
-				(x) =>
+				x =>
 					x !== null &&
 					(!Number.isFinite(x[0]) ||
 						x[0] < 0 ||
@@ -646,7 +847,7 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 		if (opts?.bearings)
 			url.searchParams.set(
 				'bearings',
-				opts.bearings.map((x) => (x ? x.join(',') : '')).join(';'),
+				opts.bearings.map(x => (x ? x.join(',') : '')).join(';'),
 			)
 		if (opts?.exclude?.length)
 			url.searchParams.set('exclude', opts.exclude.join(','))
@@ -680,7 +881,7 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 			return badRequest('Approaches length must match waypoints')
 		if (
 			opts?.radiuses?.some(
-				(x) => x !== null && (!Number.isFinite(x) || x < 0 || x > 50),
+				x => x !== null && (!Number.isFinite(x) || x < 0 || x > 50),
 			)
 		)
 			return badRequest('Invalid radiuses')
@@ -728,6 +929,147 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 		return parseNavigation(json.data, matchingSchema, 'map matching')
 	}
 
+	async function submitOptimization(
+		problem: MapboxOptimizationProblem,
+		opts?: MapboxOptimizationRequestOptions,
+	): Promise<GeoResult<MapboxOptimizationSubmission>> {
+		const invalid = validateOptimization(problem)
+		if (invalid) return invalid
+		let body: string
+		try {
+			body = JSON.stringify(problem)
+		} catch {
+			return badRequest('Optimization problem must be JSON serializable')
+		}
+		const url = new URL('https://api.mapbox.com/optimized-trips/v2')
+		url.searchParams.set('access_token', apiKey)
+		const json = await safeJson(url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body,
+			provider: 'mapbox',
+			signal: opts?.signal,
+			timeoutMs: opts?.timeoutMs,
+		})
+		if (json.error) return json
+		return parseOptimization(
+			json.data,
+			optimizationStatusSchema,
+			'submission response',
+		)
+	}
+
+	async function getOptimization(
+		id: string,
+		opts?: MapboxOptimizationRequestOptions,
+	): Promise<GeoResult<MapboxOptimizationPoll>> {
+		if (typeof id !== 'string' || !id.trim())
+			return badRequest('Optimization id is required')
+		const url = new URL(
+			`https://api.mapbox.com/optimized-trips/v2/${encodeURIComponent(id)}`,
+		)
+		url.searchParams.set('access_token', apiKey)
+		const response = await safeFetch(url, {
+			provider: 'mapbox',
+			signal: opts?.signal,
+			timeoutMs: opts?.timeoutMs,
+		})
+		if (response.error) {
+			if (response.error.status === 404)
+				return err({ ...response.error, code: 'NOT_FOUND' })
+			return response
+		}
+		if (response.data.status === 202) return ok({ complete: false })
+		if (response.data.status !== 200)
+			return err({
+				code: 'BAD_RESPONSE',
+				message: `Unexpected Mapbox optimization HTTP ${response.data.status}`,
+				provider: 'mapbox',
+				status: response.data.status,
+			})
+		let json: unknown
+		try {
+			json = await response.data.json()
+		} catch {
+			return err({
+				code: 'BAD_RESPONSE',
+				message: 'Invalid Mapbox optimization solution JSON',
+				provider: 'mapbox',
+			})
+		}
+		const solution = parseOptimization<MapboxOptimizationSolution>(
+			json,
+			optimizationSolutionSchema,
+			'solution response',
+		)
+		return solution.error
+			? solution
+			: ok({ complete: true, solution: solution.data })
+	}
+
+	async function listOptimizations(
+		opts?: MapboxOptimizationRequestOptions,
+	): Promise<GeoResult<MapboxOptimizationSubmission[]>> {
+		const url = new URL('https://api.mapbox.com/optimized-trips/v2')
+		url.searchParams.set('access_token', apiKey)
+		const json = await safeJson(url, {
+			provider: 'mapbox',
+			signal: opts?.signal,
+			timeoutMs: opts?.timeoutMs,
+		})
+		if (json.error) return json
+		return parseOptimization(
+			json.data,
+			z.array(optimizationStatusSchema),
+			'submissions response',
+		)
+	}
+
+	async function optimize(
+		problem: MapboxOptimizationProblem,
+		opts?: MapboxOptimizeOptions,
+	): Promise<GeoResult<MapboxOptimizationSolution>> {
+		const pollIntervalMs = opts?.pollIntervalMs ?? 1000
+		if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 1000)
+			return badRequest('pollIntervalMs must be at least 1000')
+		if (
+			opts?.maxWaitMs !== undefined &&
+			(!Number.isFinite(opts.maxWaitMs) || opts.maxWaitMs <= 0)
+		)
+			return badRequest('maxWaitMs must be positive')
+
+		const deadline =
+			opts?.maxWaitMs === undefined ? undefined : Date.now() + opts.maxWaitMs
+		const requestOpts = (): MapboxOptimizationRequestOptions => {
+			const remaining =
+				deadline === undefined ? undefined : Math.max(1, deadline - Date.now())
+			const timeoutMs =
+				remaining === undefined
+					? opts?.timeoutMs
+					: opts?.timeoutMs == null || opts.timeoutMs <= 0
+						? remaining
+						: Math.min(opts.timeoutMs, remaining)
+			return { signal: opts?.signal, timeoutMs }
+		}
+
+		const submission = await submitOptimization(problem, requestOpts())
+		if (submission.error) return submission
+		for (;;) {
+			if (deadline !== undefined && Date.now() >= deadline)
+				return err({
+					code: 'TIMEOUT',
+					message: 'Mapbox optimization timed out',
+					provider: 'mapbox',
+				})
+			const poll = await getOptimization(submission.data.id, requestOpts())
+			if (poll.error) return poll
+			if (poll.data.complete) return ok(poll.data.solution)
+			const remaining =
+				deadline === undefined ? pollIntervalMs : deadline - Date.now()
+			await wait(Math.min(pollIntervalMs, Math.max(0, remaining)), opts?.signal)
+		}
+	}
+
 	return {
 		name: 'mapbox',
 		defaultRateLimit: { maxPerMinute: 1000 },
@@ -737,5 +1079,9 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 		reverseGeocodeBatch,
 		directions,
 		mapMatch,
+		submitOptimization,
+		getOptimization,
+		listOptimizations,
+		optimize,
 	}
 }

@@ -83,7 +83,7 @@ const nested = await geo.withAddress(
 )
 ```
 
-### Mapbox directions / map matching
+### Mapbox navigation
 
 Mapbox client also exposes Mapbox-only navigation APIs. Profile defaults to `driving`.
 
@@ -101,6 +101,36 @@ const match = await mapboxClient.mapMatch(gpsTrace, {
   geometries: 'geojson',
 })
 ```
+
+Optimization v2 is a beta API and requires account access. Problems use Mapbox's wire format, including snake_case fields and `[longitude, latitude]` coordinates.
+
+```ts
+const problem = {
+  version: 1,
+  locations: [
+    { name: 'warehouse', coordinates: [46.6753, 24.7136] },
+    { name: 'customer', coordinates: [46.7, 24.72] },
+  ],
+  vehicles: [{
+    name: 'truck-1',
+    start_location: 'warehouse',
+    end_location: 'warehouse',
+  }],
+  services: [{ name: 'delivery-1', location: 'customer' }],
+} as const
+
+// Submit and poll until complete (at most 60 status requests/minute).
+const solution = await mapboxClient.optimize(problem, { maxWaitMs: 60_000 })
+
+// Or control the asynchronous lifecycle yourself.
+const submission = await mapboxClient.submitOptimization(problem)
+if (!submission.error) {
+  const progress = await mapboxClient.getOptimization(submission.data.id)
+  const submissions = await mapboxClient.listOptimizations()
+}
+```
+
+See [Optimization v2 documentation](https://docs.mapbox.com/api/navigation/optimization/) and [current pricing](https://www.mapbox.com/pricing).
 
 ### Fallback
 
