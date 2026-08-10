@@ -7,7 +7,11 @@ import {
 	googleAccuracy,
 	mapboxAccuracy,
 } from '../src/map/accuracy.js'
-import type { MapboxRoute } from '../src/mapbox.js'
+import type {
+	MapboxOptimizationProblem,
+	MapboxOptimizationSolution,
+	MapboxRoute,
+} from '../src/mapbox.js'
 import { mapbox } from '../src/mapbox.js'
 import type { Provider } from '../src/providers/types.js'
 import { createRateLimiter } from '../src/rate-limit.js'
@@ -89,7 +93,7 @@ test('provider factories return Provider', () => {
 		google({ apiKey: 'x' }),
 		geocod({ apiKey: 'x' }),
 	]
-	expect(providers.map((p) => p.name)).toEqual(['mapbox', 'google', 'geocod'])
+	expect(providers.map(p => p.name)).toEqual(['mapbox', 'google', 'geocod'])
 })
 
 test('geocoder', async () => {
@@ -136,7 +140,7 @@ test('geocoder', async () => {
 
 	const enriched = await geo.withAddress(
 		{ id: 7, location: { lat: 1, lng: 1 } },
-		{ getCoords: (x) => x.location },
+		{ getCoords: x => x.location },
 	)
 	expect(enriched.id).toBe(7)
 	expect(enriched.address.error).toBe(null)
@@ -354,6 +358,41 @@ const route: MapboxRoute = {
 	],
 }
 
+const optimizationProblem: MapboxOptimizationProblem = {
+	version: 1,
+	locations: [
+		{ name: 'warehouse', coordinates: [46.6753, 24.7136] },
+		{ name: 'customer', coordinates: [46.7, 24.72] },
+	],
+	vehicles: [
+		{
+			name: 'truck-1',
+			routing_profile: 'mapbox/driving',
+			start_location: 'warehouse',
+			end_location: 'warehouse',
+		},
+	],
+	services: [{ name: 'delivery-1', location: 'customer', duration: 60 }],
+}
+
+const optimizationSolution: MapboxOptimizationSolution = {
+	dropped: { services: [], shipments: [] },
+	routes: [
+		{
+			vehicle: 'truck-1',
+			stops: [
+				{
+					type: 'service',
+					location: 'customer',
+					eta: '2026-08-10T12:00:00Z',
+					odometer: 100,
+					services: ['delivery-1'],
+				},
+			],
+		},
+	],
+}
+
 test('mapbox directions serializes options and keeps extra fields', async () => {
 	let request = new URL('https://example.com')
 	const prev = globalThis.fetch
@@ -509,6 +548,128 @@ test('mapbox navigation maps API and malformed response errors', async () => {
 		const result = await mapbox({ apiKey: 'x' }).mapMatch(coords)
 		expect(result.error?.code).toBe('BAD_RESPONSE')
 	})
+})
+
+test('mapbox optimization lifecycle', async () => {
+	const requests: Array<{ url: URL; init?: RequestInit }> = []
+	const responses = [
+		Response.json({ id: 'job-1', status: 'ok' }, { status: 202 }),
+		Response.json([{ id: 'job-1', status: 'processing' }]),
+		new Response(null, { status: 202 }),
+		Response.json({ ...optimizationSolution, extra: 'kept' }),
+	]
+	const prev = globalThis.fetch
+	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+		requests.push({ url: new URL(String(input)), init })
+		const response = responses.shift()
+		if (!response) throw new Error('Unexpected fetch')
+		return response
+	}) as unknown as typeof fetch
+	try {
+		const client = mapbox({ apiKey: 'secret' })
+		const submitted = await client.submitOptimization(optimizationProblem)
+		const listed = await client.listOptimizations()
+		const pending = await client.getOptimization('job-1')
+		const complete = await client.getOptimization('job-1')
+
+		expect(requests[0]?.url.pathname).toBe('/optimized-trips/v2')
+		expect(requests[0]?.url.searchParams.get('access_token')).toBe('secret')
+		expect(requests.slice(1).map(({ url }) => url.pathname)).toEqual([
+			'/optimized-trips/v2',
+			'/optimized-trips/v2/job-1',
+			'/optimized-trips/v2/job-1',
+		])
+		expect(requests[0]?.init?.method).toBe('POST')
+		expect(requests[0]?.init?.headers).toEqual({
+			'Content-Type': 'application/json',
+		})
+		expect(JSON.parse(String(requests[0]?.init?.body))).toEqual(
+			optimizationProblem,
+		)
+		expect(submitted.data?.id).toBe('job-1')
+		expect(listed.data?.[0]?.status).toBe('processing')
+		expect(pending.data).toEqual({ complete: false })
+		expect(complete.error).toBe(null)
+		if (!complete.error && complete.data.complete) {
+			expect(complete.data.solution.routes[0]?.vehicle).toBe('truck-1')
+			expect(
+				(complete.data.solution as unknown as Record<string, unknown>).extra,
+			).toBe('kept')
+		}
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
+test('mapbox optimize submits and returns completed solution', async () => {
+	let calls = 0
+	const prev = globalThis.fetch
+	globalThis.fetch = (async () => {
+		calls++
+		return calls === 1
+			? Response.json({ id: 'job-1', status: 'ok' }, { status: 202 })
+			: Response.json(optimizationSolution)
+	}) as unknown as typeof fetch
+	try {
+		const result = await mapbox({ apiKey: 'x' }).optimize(optimizationProblem)
+		expect(result.data).toEqual(optimizationSolution)
+		expect(calls).toBe(2)
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
+test('mapbox optimization validates, aborts, times out, and maps errors', async () => {
+	let calls = 0
+	const prev = globalThis.fetch
+	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+		calls++
+		if (init?.method === 'POST')
+			return Response.json({ id: 'job-1', status: 'ok' }, { status: 202 })
+		return new Response(null, { status: 202 })
+	}) as unknown as typeof fetch
+	try {
+		const client = mapbox({ apiKey: 'x' })
+		const invalid = await client.submitOptimization({
+			...optimizationProblem,
+			locations: [],
+		})
+		const fastPoll = await client.optimize(optimizationProblem, {
+			pollIntervalMs: 999,
+		})
+		expect(invalid.error?.code).toBe('BAD_REQUEST')
+		expect(fastPoll.error?.code).toBe('BAD_REQUEST')
+		expect(calls).toBe(0)
+
+		const ac = new AbortController()
+		ac.abort()
+		const aborted = await client.optimize(optimizationProblem, {
+			signal: ac.signal,
+		})
+		expect(aborted.error?.code).toBe('ABORTED')
+		expect(calls).toBe(0)
+
+		const timedOut = await client.optimize(optimizationProblem, {
+			maxWaitMs: 1,
+		})
+		expect(timedOut.error?.code).toBe('TIMEOUT')
+	} finally {
+		globalThis.fetch = prev
+	}
+
+	await withFetch({}, async () => {
+		const malformed = await mapbox({ apiKey: 'x' }).getOptimization('job-1')
+		expect(malformed.error?.code).toBe('BAD_RESPONSE')
+	})
+	const prev404 = globalThis.fetch
+	globalThis.fetch = (async () =>
+		new Response(null, { status: 404 })) as unknown as typeof fetch
+	try {
+		const missing = await mapbox({ apiKey: 'x' }).getOptimization('missing')
+		expect(missing.error?.code).toBe('NOT_FOUND')
+	} finally {
+		globalThis.fetch = prev404
+	}
 })
 
 test('geocod maps addressee county unit id', async () => {
