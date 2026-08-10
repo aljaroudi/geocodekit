@@ -1,1 +1,1 @@
-export { type MapboxOptions, mapbox } from './providers/mapbox.js'
+export * from './providers/mapbox.js'

@@ -7,6 +7,7 @@ import {
 	googleAccuracy,
 	mapboxAccuracy,
 } from '../src/map/accuracy.js'
+import type { MapboxRoute } from '../src/mapbox.js'
 import { mapbox } from '../src/mapbox.js'
 import type { Provider } from '../src/providers/types.js'
 import { createRateLimiter } from '../src/rate-limit.js'
@@ -327,6 +328,187 @@ test('mapbox permanent query param', async () => {
 	} finally {
 		globalThis.fetch = prev
 	}
+})
+
+const route: MapboxRoute = {
+	weight_name: 'routability',
+	weight: 12,
+	duration: 10,
+	distance: 100,
+	geometry: {
+		type: 'LineString',
+		coordinates: [
+			[1, 2],
+			[3, 4],
+		],
+	},
+	legs: [
+		{
+			summary: 'Main St',
+			distance: 100,
+			duration: 10,
+			weight: 12,
+			steps: [],
+			annotation: { distance: [100] },
+		},
+	],
+}
+
+test('mapbox directions serializes options and keeps extra fields', async () => {
+	let request = new URL('https://example.com')
+	const prev = globalThis.fetch
+	globalThis.fetch = (async (input: RequestInfo | URL) => {
+		request = new URL(String(input))
+		return Response.json({
+			code: 'Ok',
+			routes: [{ ...route, extra: 'kept' }],
+			waypoints: [
+				{ name: 'A', location: [1, 2] },
+				{ name: 'B', location: [3, 4] },
+			],
+			uuid: 'route-id',
+		})
+	}) as unknown as typeof fetch
+	try {
+		const result = await mapbox({ apiKey: 'secret' }).directions(
+			[
+				{ lat: 2, lng: 1 },
+				{ lat: 4, lng: 3 },
+			],
+			{
+				profile: 'walking',
+				geometries: 'geojson',
+				overview: 'full',
+				annotations: ['distance'],
+				radiuses: [10, null],
+				approaches: [null, 'curb'],
+				alternatives: true,
+				bearings: [[0, 45], null],
+				exclude: ['ferry'],
+				continueStraight: false,
+				departAt: 'now',
+			},
+		)
+		expect(request.pathname).toBe('/directions/v5/mapbox/walking/1,2;3,4')
+		expect(request.searchParams.get('access_token')).toBe('secret')
+		expect(request.searchParams.get('radiuses')).toBe('10;')
+		expect(request.searchParams.get('approaches')).toBe(';curb')
+		expect(request.searchParams.get('bearings')).toBe('0,45;')
+		expect(request.searchParams.get('continue_straight')).toBe('false')
+		expect(request.searchParams.get('depart_at')).toBe('now')
+		expect(result.error).toBe(null)
+		if (!result.error) {
+			expect(result.data.routes[0]?.geometry).toEqual(route.geometry)
+			expect(
+				(result.data.routes[0] as unknown as Record<string, unknown>).extra,
+			).toBe('kept')
+		}
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
+test('mapbox map matching defaults driving and returns tracepoints', async () => {
+	let request = new URL('https://example.com')
+	const prev = globalThis.fetch
+	globalThis.fetch = (async (input: RequestInfo | URL) => {
+		request = new URL(String(input))
+		return Response.json({
+			code: 'Ok',
+			matchings: [{ ...route, geometry: 'encoded', confidence: 0.9 }],
+			tracepoints: [
+				null,
+				{
+					name: 'B',
+					location: [3, 4],
+					matchings_index: 0,
+					waypoint_index: 1,
+				},
+			],
+		})
+	}) as unknown as typeof fetch
+	try {
+		const result = await mapbox({ apiKey: 'x' }).mapMatch(
+			[
+				{ lat: 2, lng: 1 },
+				{ lat: 4, lng: 3 },
+			],
+			{
+				timestamps: [100, 105],
+				tidy: true,
+				waypoints: [0, 1],
+				approaches: [null, 'curb'],
+			},
+		)
+		expect(request.pathname).toBe('/matching/v5/mapbox/driving/1,2;3,4.json')
+		expect(request.searchParams.get('timestamps')).toBe('100;105')
+		expect(request.searchParams.get('tidy')).toBe('true')
+		expect(request.searchParams.get('waypoints')).toBe('0;1')
+		expect(result.error).toBe(null)
+		if (!result.error) {
+			expect(result.data.matchings[0]?.geometry).toBe('encoded')
+			expect(result.data.tracepoints[0]).toBeNull()
+		}
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
+test('mapbox navigation validates input without fetching', async () => {
+	let calls = 0
+	const prev = globalThis.fetch
+	globalThis.fetch = (async () => {
+		calls++
+		return Response.json({ code: 'Ok' })
+	}) as unknown as typeof fetch
+	try {
+		const client = mapbox({ apiKey: 'x' })
+		const tooFew = await client.directions([{ lat: 1, lng: 2 }])
+		const invalid = await client.directions([
+			{ lat: 91, lng: 2 },
+			{ lat: 1, lng: 2 },
+		])
+		const mismatched = await client.mapMatch(
+			[
+				{ lat: 1, lng: 2 },
+				{ lat: 3, lng: 4 },
+			],
+			{ radiuses: [5] },
+		)
+		const tooMany = await client.directions(
+			Array.from({ length: 26 }, () => ({ lat: 1, lng: 2 })),
+		)
+		const timestamps = await client.mapMatch(
+			[
+				{ lat: 1, lng: 2 },
+				{ lat: 3, lng: 4 },
+			],
+			{ timestamps: [105, 100] },
+		)
+		expect(tooFew.error?.code).toBe('BAD_REQUEST')
+		expect(invalid.error?.code).toBe('BAD_REQUEST')
+		expect(mismatched.error?.code).toBe('BAD_REQUEST')
+		expect(tooMany.error?.code).toBe('BAD_REQUEST')
+		expect(timestamps.error?.code).toBe('BAD_REQUEST')
+		expect(calls).toBe(0)
+	} finally {
+		globalThis.fetch = prev
+	}
+})
+
+test('mapbox navigation maps API and malformed response errors', async () => {
+	const coords = [
+		{ lat: 1, lng: 2 },
+		{ lat: 3, lng: 4 },
+	]
+	await withFetch({ code: 'NoMatch', message: 'No match' }, async () => {
+		const result = await mapbox({ apiKey: 'x' }).mapMatch(coords)
+		expect(result.error?.code).toBe('NOT_FOUND')
+	})
+	await withFetch({ code: 'Ok', matchings: 'bad' }, async () => {
+		const result = await mapbox({ apiKey: 'x' }).mapMatch(coords)
+		expect(result.error?.code).toBe('BAD_RESPONSE')
+	})
 })
 
 test('geocod maps addressee county unit id', async () => {

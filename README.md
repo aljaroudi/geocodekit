@@ -19,8 +19,8 @@ import { google } from 'geocodekit/google'
 
 const geo = createGeocoder({
   providers: [
-    mapbox({ apiKey: process.env.MAPBOX_TOKEN! }),
-    google({ apiKey: process.env.GOOGLE_MAPS_KEY! }),
+    mapbox({ apiKey: MAPBOX_TOKEN }),
+    google({ apiKey: GOOGLE_MAPS_KEY }),
   ],
 })
 
@@ -79,8 +79,27 @@ const out = await geo.withAddress(pin)
 
 const nested = await geo.withAddress(
   { id: 1, location: { lat: 40.7, lng: -74 } },
-  { getCoords: (x) => x.location },
+  { getCoords: x => x.location },
 )
+```
+
+### Mapbox directions / map matching
+
+Mapbox client also exposes Mapbox-only navigation APIs. Profile defaults to `driving`.
+
+```ts
+const mapboxClient = mapbox({ apiKey: MAPBOX_TOKEN })
+
+const route = await mapboxClient.directions(
+  [{ lat: 24.7136, lng: 46.6753 }, { lat: 21.4858, lng: 39.1925 }],
+  { profile: 'driving-traffic', geometries: 'geojson', steps: true },
+)
+
+const match = await mapboxClient.mapMatch(gpsTrace, {
+  timestamps,
+  tidy: true,
+  geometries: 'geojson',
+})
 ```
 
 ### Fallback
@@ -90,7 +109,7 @@ Default: try next provider on any error except `BAD_REQUEST` and `ABORTED`.
 ```ts
 createGeocoder({
   providers: […],
-  shouldFallback: (e) => e.code === 'RATE_LIMIT' || e.code === 'NETWORK',
+  shouldFallback: e => e.code === 'RATE_LIMIT' || e.code === 'NETWORK',
 })
 ```
 
