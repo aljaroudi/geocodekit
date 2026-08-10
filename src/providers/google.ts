@@ -1,9 +1,17 @@
 import * as z from 'zod/mini'
 import { safeJson } from '../fetch.js'
 import { googleAccuracy } from '../map/accuracy.js'
+import {
+	normalizeOptimizationSolution,
+	type OptimizationProblem,
+	type OptimizationProvider,
+	type OptimizationSolution,
+	type OptimizeOptions,
+	validateOptimizationProblem,
+} from '../optimization.js'
 import { err, ok } from '../result.js'
 import type { AddressQuery, GeoResult, Place } from '../types.js'
-import type { ApiKeyOptions, Provider } from './types.js'
+import type { ApiKeyOptions } from './types.js'
 
 const componentSchema = z.object({
 	long_name: z.string(),
@@ -34,12 +42,21 @@ const responseSchema = z.object({
 	results: z.optional(z.array(resultSchema)),
 })
 
+const optimizationResponseSchema = z.object({
+	routes: z.array(
+		z.object({
+			visits: z.array(z.object({ shipmentIndex: z.number() })),
+		}),
+	),
+	skippedShipments: z.optional(z.array(z.object({ index: z.number() }))),
+})
+
 function pickComponent(
 	components: z.infer<typeof componentSchema>[] | undefined,
 	type: string,
 	short = false,
 ): string | undefined {
-	const c = components?.find((x) => x.types.includes(type))
+	const c = components?.find(x => x.types.includes(type))
 	return c ? (short ? c.short_name : c.long_name) : undefined
 }
 
@@ -164,9 +181,115 @@ function structuredToAddress(q: Exclude<AddressQuery, string>): string {
 		.join(', ')
 }
 
-export type GoogleOptions = ApiKeyOptions
+export type GoogleOptions = ApiKeyOptions & { projectId?: string }
+export type GoogleClient = OptimizationProvider
 
-export function google({ apiKey }: GoogleOptions): Provider {
+export function google({ apiKey, projectId }: GoogleOptions): GoogleClient {
+	async function optimize(
+		problem: OptimizationProblem,
+		opts?: OptimizeOptions,
+	): Promise<GeoResult<OptimizationSolution>> {
+		const invalid = validateOptimizationProblem(problem, opts, 'google')
+		if (invalid) return invalid
+		if (!projectId?.trim())
+			return err({
+				code: 'BAD_REQUEST',
+				message: 'Google projectId is required for optimization',
+				provider: 'google',
+			})
+
+		const timeoutSeconds = opts?.timeoutMs
+			? Math.max(1, Math.ceil(opts.timeoutMs / 1000))
+			: undefined
+		const url = new URL(
+			`https://routeoptimization.googleapis.com/v1/projects/${encodeURIComponent(projectId)}:optimizeTours`,
+		)
+		const json = await safeJson(url, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'X-Goog-Api-Key': apiKey,
+				...(timeoutSeconds
+					? { 'X-Server-Timeout': String(timeoutSeconds) }
+					: {}),
+			},
+			body: JSON.stringify({
+				...(timeoutSeconds ? { timeout: `${timeoutSeconds}s` } : {}),
+				model: {
+					shipments: problem.stops.map(stop => ({
+						deliveries: [
+							{
+								arrivalLocation: {
+									latitude: stop.coordinates.lat,
+									longitude: stop.coordinates.lng,
+								},
+							},
+						],
+					})),
+					vehicles: [
+						{
+							...(problem.start
+								? {
+										startLocation: {
+											latitude: problem.start.lat,
+											longitude: problem.start.lng,
+										},
+									}
+								: {}),
+							...(problem.end
+								? {
+										endLocation: {
+											latitude: problem.end.lat,
+											longitude: problem.end.lng,
+										},
+									}
+								: {}),
+							costPerTraveledHour: 1,
+						},
+					],
+				},
+			}),
+			provider: 'google',
+			signal: opts?.signal,
+			timeoutMs: opts?.timeoutMs,
+		})
+		if (json.error) return json
+		const parsed = z.safeParse(optimizationResponseSchema, json.data)
+		if (!parsed.success)
+			return err({
+				code: 'BAD_RESPONSE',
+				message: 'Invalid Google optimization response',
+				provider: 'google',
+			})
+
+		const orderIndexes = parsed.data.routes.flatMap(route =>
+			route.visits.map(visit => visit.shipmentIndex),
+		)
+		const droppedIndexes = (parsed.data.skippedShipments ?? []).map(
+			shipment => shipment.index,
+		)
+		const indexes = [...orderIndexes, ...droppedIndexes]
+		if (
+			indexes.some(
+				index =>
+					!Number.isInteger(index) ||
+					index < 0 ||
+					index >= problem.stops.length,
+			)
+		)
+			return err({
+				code: 'BAD_RESPONSE',
+				message: 'Invalid Google optimization shipment index',
+				provider: 'google',
+			})
+		return normalizeOptimizationSolution(
+			problem,
+			orderIndexes.map(index => problem.stops[index]?.id as string),
+			droppedIndexes.map(index => problem.stops[index]?.id as string),
+			'google',
+		)
+	}
+
 	return {
 		name: 'google',
 		defaultRateLimit: { maxPerMinute: 3000 },
@@ -207,5 +330,6 @@ export function google({ apiKey }: GoogleOptions): Provider {
 			if (json.error) return json
 			return parseResponse(json.data)
 		},
+		optimize,
 	}
 }
