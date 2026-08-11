@@ -19,6 +19,8 @@ import { isEmptyQuery, isValidCoords, refinePlace } from '../src/refine.js'
 import { err, ok } from '../src/result.js'
 import type { Place } from '../src/types.js'
 
+const optimizationHeaders = () => ({ Authorization: 'Bearer token' })
+
 const place: Place = {
 	formatted: '1 Main St, Springfield, IL 62701, US',
 	coordinates: { lat: 39.8, lng: -89.6 },
@@ -225,6 +227,7 @@ test('google maps unit county neighborhood', async () => {
 
 test('google optimize sends one vehicle and normalizes its route', async () => {
 	let request: { url: URL; init?: RequestInit } | undefined
+	let authCalls = 0
 	const prev = globalThis.fetch
 	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 		request = { url: new URL(String(input)), init }
@@ -242,18 +245,23 @@ test('google optimize sends one vehicle and normalizes its route', async () => {
 			start: { lat: 24.6, lng: 46.5 },
 			end: { lat: 24.9, lng: 46.8 },
 		}
-		const result = await google({
+		const client = google({
 			apiKey: 'key',
 			projectId: 'my-project',
-		}).optimize(problem, { timeoutMs: 45_500 })
+			getOptimizationHeaders: () => {
+				authCalls++
+				return { Authorization: `Bearer token-${authCalls}` }
+			},
+		})
+		const result = await client.optimize(problem, { timeoutMs: 45_500 })
 		expect(result.data).toEqual({ order: ['b', 'a'], dropped: [] })
 		expect(request?.url.pathname).toBe('/v1/projects/my-project:optimizeTours')
 		expect(request?.init?.method).toBe('POST')
-		expect(request?.init?.headers).toEqual({
-			'Content-Type': 'application/json',
-			'X-Goog-Api-Key': 'key',
-			'X-Server-Timeout': '46',
-		})
+		const headers = new Headers(request?.init?.headers)
+		expect(headers.get('Authorization')).toBe('Bearer token-1')
+		expect(headers.get('X-Goog-Api-Key')).toBeNull()
+		expect(headers.get('Content-Type')).toBe('application/json')
+		expect(headers.get('X-Server-Timeout')).toBe('46')
 		expect(JSON.parse(String(request?.init?.body))).toEqual({
 			timeout: '46s',
 			model: {
@@ -282,6 +290,8 @@ test('google optimize sends one vehicle and normalizes its route', async () => {
 				],
 			},
 		})
+		await client.optimize(problem)
+		expect(authCalls).toBe(2)
 	} finally {
 		globalThis.fetch = prev
 	}
@@ -303,6 +313,7 @@ test('google optimize accepts 1000 stops', async () => {
 			const result = await google({
 				apiKey: 'x',
 				projectId: 'project',
+				getOptimizationHeaders: optimizationHeaders,
 			}).optimize({ stops })
 			expect(result.data?.order).toHaveLength(1000)
 		},
@@ -795,6 +806,7 @@ test('shared optimization rejects invalid input without fetching', async () => {
 		const googleResult = await google({
 			apiKey: 'x',
 			projectId: 'project',
+			getOptimizationHeaders: optimizationHeaders,
 		}).optimize(duplicate)
 		const missingProject = await google({ apiKey: 'x' }).optimize(
 			normalizedOptimizationProblem,
@@ -802,12 +814,30 @@ test('shared optimization rejects invalid input without fetching', async () => {
 		const badTimeout = await google({
 			apiKey: 'x',
 			projectId: 'project',
+			getOptimizationHeaders: optimizationHeaders,
 		}).optimize(normalizedOptimizationProblem, { timeoutMs: 0 })
+		const missingAuth = await google({
+			apiKey: 'x',
+			projectId: 'project',
+		}).optimize(normalizedOptimizationProblem)
+		const rejectedAuth = await google({
+			apiKey: 'x',
+			projectId: 'project',
+			getOptimizationHeaders: () => Promise.reject(new Error('no token')),
+		}).optimize(normalizedOptimizationProblem)
+		const invalidAuth = await google({
+			apiKey: 'x',
+			projectId: 'project',
+			getOptimizationHeaders: () => ({}),
+		}).optimize(normalizedOptimizationProblem)
 
 		expect(mapboxResult.error?.code).toBe('BAD_REQUEST')
 		expect(googleResult.error?.code).toBe('BAD_REQUEST')
 		expect(missingProject.error?.code).toBe('BAD_REQUEST')
 		expect(badTimeout.error?.code).toBe('BAD_REQUEST')
+		expect(missingAuth.error?.code).toBe('AUTH')
+		expect(rejectedAuth.error?.code).toBe('AUTH')
+		expect(invalidAuth.error?.code).toBe('AUTH')
 		expect(calls).toBe(0)
 	} finally {
 		globalThis.fetch = prev
@@ -819,6 +849,7 @@ test('optimization rejects incomplete provider stop orders', async () => {
 		const result = await google({
 			apiKey: 'x',
 			projectId: 'project',
+			getOptimizationHeaders: optimizationHeaders,
 		}).optimize(normalizedOptimizationProblem)
 		expect(result.error?.code).toBe('BAD_RESPONSE')
 	})
@@ -832,6 +863,7 @@ test('optimization rejects incomplete provider stop orders', async () => {
 			const result = await google({
 				apiKey: 'x',
 				projectId: 'project',
+				getOptimizationHeaders: optimizationHeaders,
 			}).optimize(normalizedOptimizationProblem)
 			expect(result.error?.code).toBe('BAD_RESPONSE')
 		},
@@ -870,7 +902,11 @@ test('optimization rejects incomplete provider stop orders', async () => {
 })
 
 test('google optimize maps abort, timeout, and HTTP errors', async () => {
-	const client = google({ apiKey: 'x', projectId: 'project' })
+	const client = google({
+		apiKey: 'x',
+		projectId: 'project',
+		getOptimizationHeaders: optimizationHeaders,
+	})
 	const abortedController = new AbortController()
 	abortedController.abort()
 	const aborted = await client.optimize(normalizedOptimizationProblem, {

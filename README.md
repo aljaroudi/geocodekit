@@ -107,6 +107,8 @@ const match = await mapboxClient.mapMatch(gpsTrace, {
 Mapbox and Google clients share one single-vehicle API. Stops use normal `{ lat, lng }` coordinates; results contain the optimized stop ids and any dropped ids.
 
 ```ts
+import { GoogleAuth } from 'google-auth-library'
+
 const problem = {
   stops: [
     { id: 'a', coordinates: { lat: 24.7136, lng: 46.6753 } },
@@ -116,9 +118,13 @@ const problem = {
   end: { lat: 24.8, lng: 46.8 },   // optional fixed end
 }
 
+const auth = new GoogleAuth({
+  scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+})
 const googleClient = google({
-  apiKey: GOOGLE_MAPS_KEY,
+  apiKey: GOOGLE_MAPS_KEY, // geocoding only
   projectId: GOOGLE_CLOUD_PROJECT,
+  getOptimizationHeaders: () => auth.getRequestHeaders(),
 })
 const result = await googleClient.optimize(problem, { timeoutMs: 60_000 })
 if (!result.error) console.log(result.data.order, result.data.dropped)
@@ -127,7 +133,7 @@ if (!result.error) console.log(result.data.order, result.data.dropped)
 await mapboxClient.optimize(problem, { timeoutMs: 60_000 })
 ```
 
-Enable Google's Route Optimization API and billing for `projectId`. The normalized API supports 2–1,000 stops, one driving vehicle, and optional fixed start/end points. See [Google Route Optimization](https://developers.google.com/maps/documentation/route-optimization/overview), [timeouts](https://developers.google.com/maps/documentation/route-optimization/timeouts), and [usage and billing](https://developers.google.com/maps/documentation/route-optimization/usage-and-billing).
+Your app owns `google-auth-library` and its ADC or service-account setup; geocodekit requests fresh OAuth headers for every optimization. Enable Google's Route Optimization API and billing for `projectId`. The normalized API supports 2–1,000 stops, one driving vehicle, and optional fixed start/end points. See [Google Route Optimization](https://developers.google.com/maps/documentation/route-optimization/overview), [authentication](https://developers.google.com/maps/documentation/route-optimization/cloud-setup), [timeouts](https://developers.google.com/maps/documentation/route-optimization/timeouts), and [usage and billing](https://developers.google.com/maps/documentation/route-optimization/usage-and-billing).
 
 Mapbox Optimization v2 is beta and requires account access. Use `optimizeV2` when the full Mapbox wire format is needed, including multiple vehicles, services, or shipments.
 
