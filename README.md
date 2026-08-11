@@ -63,6 +63,15 @@ await geo.geocode({
 })
 ```
 
+### Candidate search
+
+`search` returns provider-ranked, normalized places ready for selection. Mapbox
+matches partial input; Google and Geocod.io return forward-geocoding alternatives.
+
+```ts
+const candidates = await geo.search('1600 Amph', { limit: 5, country: 'US' })
+```
+
 ### Options that narrow types
 
 - `require: ['street', 'county', 'name', …]`: missing fields → `MISSING_FIELDS`; success narrows those keys on `Place` / `components`

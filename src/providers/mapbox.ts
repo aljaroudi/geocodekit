@@ -17,11 +17,13 @@ import type {
 	Coords,
 	GeoResult,
 	Place,
+	SearchOpts,
 } from '../types.js'
 import type {
 	ApiKeyOptions,
 	BatchProvider,
 	ProviderRequestOpts,
+	SearchProvider,
 } from './types.js'
 
 const featureSchema = z.object({
@@ -415,6 +417,7 @@ export type MapboxOptimizeV2Options = MapboxOptimizationRequestOptions & {
 }
 
 export type MapboxClient = BatchProvider &
+	SearchProvider &
 	OptimizationProvider & {
 		directions(
 			coords: Coords[],
@@ -508,6 +511,15 @@ function featureToPlace(f: Feature): Place | null {
 }
 
 function parseCollection(json: unknown): GeoResult<Place> {
+	const result = parseCollectionList(json, 1)
+	if (result.error) return result
+	const first = result.data[0]
+	return first
+		? ok(first)
+		: err({ code: 'NOT_FOUND', message: 'No results', provider: 'mapbox' })
+}
+
+function parseCollectionList(json: unknown, limit: number): GeoResult<Place[]> {
 	const parsed = z.safeParse(collectionSchema, json)
 	if (!parsed.success) {
 		return err({
@@ -516,17 +528,17 @@ function parseCollection(json: unknown): GeoResult<Place> {
 			provider: 'mapbox',
 		})
 	}
-	const feature = parsed.data.features?.[0]
-	if (!feature)
+	const features = parsed.data.features?.slice(0, limit) ?? []
+	if (!features.length)
 		return err({ code: 'NOT_FOUND', message: 'No results', provider: 'mapbox' })
-	const place = featureToPlace(feature)
-	if (!place)
-		return err({
-			code: 'BAD_RESPONSE',
-			message: 'Missing coordinates',
-			provider: 'mapbox',
-		})
-	return ok(place)
+	const places = features.map(featureToPlace)
+	return places.some(place => !place)
+		? err({
+				code: 'BAD_RESPONSE',
+				message: 'Missing coordinates',
+				provider: 'mapbox',
+			})
+		: ok(places as Place[])
 }
 
 function structuredParams(q: Exclude<AddressQuery, string>): URLSearchParams {
@@ -701,13 +713,16 @@ function wait(ms: number, signal?: AbortSignal): Promise<void> {
 export type MapboxOptions = ApiKeyOptions
 
 export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
-	async function geocode(
+	async function forward(
 		query: AddressQuery,
+		limit: number,
 		opts?: ProviderRequestOpts,
-	): Promise<GeoResult<Place>> {
+		autocomplete = false,
+	): Promise<GeoResult<Place[]>> {
 		const url = new URL('https://api.mapbox.com/search/geocode/v6/forward')
 		url.searchParams.set('access_token', apiKey)
-		url.searchParams.set('limit', '1')
+		url.searchParams.set('limit', String(limit))
+		if (autocomplete) url.searchParams.set('autocomplete', 'true')
 		if (opts?.permanent) url.searchParams.set('permanent', 'true')
 		if (opts?.country)
 			url.searchParams.set('country', opts.country.toLowerCase())
@@ -723,7 +738,36 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 			timeoutMs: opts?.timeoutMs,
 		})
 		if (json.error) return json
-		return parseCollection(json.data)
+		return parseCollectionList(json.data, limit)
+	}
+
+	async function geocode(
+		query: AddressQuery,
+		opts?: ProviderRequestOpts,
+	): Promise<GeoResult<Place>> {
+		const result = await forward(query, 1, opts)
+		if (result.error) return result
+		return ok(result.data[0] as Place)
+	}
+
+	async function search(
+		query: string,
+		opts?: SearchOpts,
+	): Promise<GeoResult<Place[]>> {
+		if (!query.trim())
+			return err({
+				code: 'BAD_REQUEST',
+				message: 'Empty search query',
+				provider: 'mapbox',
+			})
+		const limit = opts?.limit ?? 5
+		if (!Number.isInteger(limit) || limit < 1 || limit > 10)
+			return err({
+				code: 'BAD_REQUEST',
+				message: 'limit must be an integer from 1 to 10',
+				provider: 'mapbox',
+			})
+		return forward(query, limit, opts, true)
 	}
 
 	async function reverseGeocode(
@@ -1150,6 +1194,7 @@ export function mapbox({ apiKey }: MapboxOptions): MapboxClient {
 		name: 'mapbox',
 		defaultRateLimit: { maxPerMinute: 1000 },
 		geocode,
+		search,
 		reverseGeocode,
 		geocodeBatch,
 		reverseGeocodeBatch,

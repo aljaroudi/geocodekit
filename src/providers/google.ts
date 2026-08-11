@@ -10,8 +10,12 @@ import {
 	validateOptimizationProblem,
 } from '../optimization.js'
 import { err, ok } from '../result.js'
-import type { AddressQuery, GeoResult, Place } from '../types.js'
-import type { ApiKeyOptions } from './types.js'
+import type { AddressQuery, GeoResult, Place, SearchOpts } from '../types.js'
+import type {
+	ApiKeyOptions,
+	ProviderRequestOpts,
+	SearchProvider,
+} from './types.js'
 
 const componentSchema = z.object({
 	long_name: z.string(),
@@ -119,7 +123,7 @@ function toPlace(r: z.infer<typeof resultSchema>): Place | null {
 	}
 }
 
-function statusError(status: string, message?: string): GeoResult<Place> {
+function statusError(status: string, message?: string): GeoResult<never> {
 	switch (status) {
 		case 'ZERO_RESULTS':
 			return err({
@@ -162,6 +166,12 @@ function statusError(status: string, message?: string): GeoResult<Place> {
 }
 
 function parseResponse(json: unknown): GeoResult<Place> {
+	const result = parseResponseList(json, 1)
+	if (result.error) return result
+	return ok(result.data[0] as Place)
+}
+
+function parseResponseList(json: unknown, limit: number): GeoResult<Place[]> {
 	const parsed = z.safeParse(responseSchema, json)
 	if (!parsed.success) {
 		return err({
@@ -172,17 +182,17 @@ function parseResponse(json: unknown): GeoResult<Place> {
 	}
 	const { status, error_message, results } = parsed.data
 	if (status !== 'OK') return statusError(status, error_message)
-	const first = results?.[0]
-	if (!first)
+	const rows = results?.slice(0, limit) ?? []
+	if (!rows.length)
 		return err({ code: 'NOT_FOUND', message: 'No results', provider: 'google' })
-	const place = toPlace(first)
-	if (!place)
-		return err({
-			code: 'BAD_RESPONSE',
-			message: 'Missing coordinates',
-			provider: 'google',
-		})
-	return ok(place)
+	const places = rows.map(toPlace)
+	return places.some(place => !place)
+		? err({
+				code: 'BAD_RESPONSE',
+				message: 'Missing coordinates',
+				provider: 'google',
+			})
+		: ok(places as Place[])
 }
 
 function structuredToComponents(q: Exclude<AddressQuery, string>): string {
@@ -215,13 +225,37 @@ export type GoogleOptions = ApiKeyOptions & {
 	projectId?: string
 	getOptimizationHeaders?: () => HeadersInit | Promise<HeadersInit>
 }
-export type GoogleClient = OptimizationProvider
+export type GoogleClient = OptimizationProvider & SearchProvider
 
 export function google({
 	apiKey,
 	projectId,
 	getOptimizationHeaders,
 }: GoogleOptions): GoogleClient {
+	async function forward(
+		query: AddressQuery,
+		opts?: ProviderRequestOpts,
+	): Promise<GeoResult<unknown>> {
+		const url = new URL('https://maps.googleapis.com/maps/api/geocode/json')
+		url.searchParams.set('key', apiKey)
+		if (opts?.language) url.searchParams.set('language', opts.language)
+		if (opts?.country)
+			url.searchParams.set('region', opts.country.toLowerCase())
+		if (typeof query === 'string') {
+			url.searchParams.set('address', query)
+		} else {
+			const address = structuredToAddress(query)
+			const components = structuredToComponents(query)
+			if (address) url.searchParams.set('address', address)
+			if (components) url.searchParams.set('components', components)
+		}
+		return safeJson(url, {
+			provider: 'google',
+			signal: opts?.signal,
+			timeoutMs: opts?.timeoutMs,
+		})
+	}
+
 	async function optimize(
 		problem: OptimizationProblem,
 		opts?: OptimizeOptions,
@@ -366,26 +400,27 @@ export function google({
 		name: 'google',
 		defaultRateLimit: { maxPerMinute: 3000 },
 		geocode: async (query, opts) => {
-			const url = new URL('https://maps.googleapis.com/maps/api/geocode/json')
-			url.searchParams.set('key', apiKey)
-			if (opts?.language) url.searchParams.set('language', opts.language)
-			if (opts?.country)
-				url.searchParams.set('region', opts.country.toLowerCase())
-			if (typeof query === 'string') {
-				url.searchParams.set('address', query)
-			} else {
-				const address = structuredToAddress(query)
-				const components = structuredToComponents(query)
-				if (address) url.searchParams.set('address', address)
-				if (components) url.searchParams.set('components', components)
-			}
-			const json = await safeJson(url, {
-				provider: 'google',
-				signal: opts?.signal,
-				timeoutMs: opts?.timeoutMs,
-			})
+			const json = await forward(query, opts)
 			if (json.error) return json
 			return parseResponse(json.data)
+		},
+		search: async (query, opts?: SearchOpts) => {
+			if (!query.trim())
+				return err({
+					code: 'BAD_REQUEST',
+					message: 'Empty search query',
+					provider: 'google',
+				})
+			const limit = opts?.limit ?? 5
+			if (!Number.isInteger(limit) || limit < 1 || limit > 10)
+				return err({
+					code: 'BAD_REQUEST',
+					message: 'limit must be an integer from 1 to 10',
+					provider: 'google',
+				})
+			const json = await forward(query, opts)
+			if (json.error) return json
+			return parseResponseList(json.data, limit)
 		},
 		reverseGeocode: async (coords, opts) => {
 			const url = new URL('https://maps.googleapis.com/maps/api/geocode/json')

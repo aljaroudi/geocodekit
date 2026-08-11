@@ -1,4 +1,8 @@
-import type { BatchProvider, Provider } from './providers/types.js'
+import type {
+	BatchProvider,
+	Provider,
+	SearchProvider,
+} from './providers/types.js'
 import { createRateLimiter, mapPool } from './rate-limit.js'
 import { isEmptyQuery, isValidCoords, refinePlace } from './refine.js'
 import { err } from './result.js'
@@ -13,6 +17,7 @@ import type {
 	Place,
 	PlaceNarrowed,
 	RequireKey,
+	SearchOpts,
 } from './types.js'
 
 export type ProvidersSupportBatch<Ps extends readonly Provider[]> =
@@ -130,7 +135,7 @@ async function runArray<T>(
 				result = await withFallback(
 					providers.slice(1),
 					shouldFallback,
-					(p) => oneFn(p, item),
+					p => oneFn(p, item),
 					filter,
 				)
 			}
@@ -144,8 +149,8 @@ async function runArray<T>(
 		first?.defaultRateLimit ?? { maxPerMinute: 60 }
 	const pace = createRateLimiter(limit)
 	const concurrency = Math.max(1, opts?.concurrency ?? 1)
-	return mapPool(items, concurrency, pace, (item) =>
-		withFallback(providers, shouldFallback, (p) => oneFn(p, item), filter),
+	return mapPool(items, concurrency, pace, item =>
+		withFallback(providers, shouldFallback, p => oneFn(p, item), filter),
 	)
 }
 
@@ -182,7 +187,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(config: {
 				providers,
 				shouldFallback,
 				opts,
-				(p) => typeof p.geocodeBatch === 'function',
+				p => typeof p.geocodeBatch === 'function',
 				(p, items) => {
 					const batch = p.geocodeBatch
 					if (!batch) {
@@ -214,7 +219,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(config: {
 		return withFallback(
 			providers,
 			shouldFallback,
-			(p) => p.geocode(query, requestOpts(opts)),
+			p => p.geocode(query, requestOpts(opts)),
 			refineOpts(opts),
 		)
 	}
@@ -243,7 +248,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(config: {
 				providers,
 				shouldFallback,
 				opts,
-				(p) => typeof p.reverseGeocodeBatch === 'function',
+				p => typeof p.reverseGeocodeBatch === 'function',
 				(p, items) => {
 					const batch = p.reverseGeocodeBatch
 					if (!batch) {
@@ -275,9 +280,60 @@ export function createGeocoder<const Ps extends readonly unknown[]>(config: {
 		return withFallback(
 			providers,
 			shouldFallback,
-			(p) => p.reverseGeocode(coords, requestOpts(opts)),
+			p => p.reverseGeocode(coords, requestOpts(opts)),
 			refineOpts(opts),
 		)
+	}
+
+	async function search(
+		query: string,
+		opts?: SearchOpts,
+	): Promise<GeoResult<Place[]>> {
+		if (!query.trim())
+			return err({ code: 'BAD_REQUEST', message: 'Empty search query' })
+		const limit = opts?.limit ?? 5
+		if (!Number.isInteger(limit) || limit < 1 || limit > 10)
+			return err({
+				code: 'BAD_REQUEST',
+				message: 'limit must be an integer from 1 to 10',
+			})
+
+		const searchable = providers.filter(
+			(p): p is Provs[number] & SearchProvider =>
+				typeof p.search === 'function',
+		)
+		if (!searchable.length)
+			return err({
+				code: 'BAD_REQUEST',
+				message: 'No providers support search',
+			})
+
+		let last: GeoResult<Place[]> = err({
+			code: 'NOT_FOUND',
+			message: 'No results',
+		})
+		for (let i = 0; i < searchable.length; i++) {
+			const provider = searchable[i]
+			if (!provider) continue
+			const result = await provider.search(query, {
+				...requestOpts(opts),
+				limit,
+			})
+			if (!result.error && result.data.length) return result
+			last = result.error
+				? result
+				: err({
+						code: 'NOT_FOUND',
+						message: 'No results',
+						provider: provider.name,
+					})
+			if (
+				last.error &&
+				(i === searchable.length - 1 || !shouldFallback(last.error))
+			)
+				return last
+		}
+		return last
 	}
 
 	async function withAddress<
@@ -327,7 +383,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(config: {
 
 		if (Array.isArray(itemOrItems)) {
 			const items = itemOrItems as object[]
-			const coords = items.map((item) => {
+			const coords = items.map(item => {
 				try {
 					return getCoords(item)
 				} catch {
@@ -335,7 +391,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(config: {
 				}
 			})
 			const results = await reverseGeocode(
-				coords.map((c) => (c && isValidCoords(c) ? c : { lat: NaN, lng: NaN })),
+				coords.map(c => (c && isValidCoords(c) ? c : { lat: NaN, lng: NaN })),
 				opts,
 			)
 			return items.map((item, i) => {
@@ -363,7 +419,7 @@ export function createGeocoder<const Ps extends readonly unknown[]>(config: {
 		return { ...item, address }
 	}
 
-	return { geocode, reverseGeocode, withAddress }
+	return { geocode, reverseGeocode, search, withAddress }
 }
 
 export type Geocoder<

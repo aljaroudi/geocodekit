@@ -15,6 +15,7 @@ export type {
 	BatchProvider,
 	Provider,
 	ProviderRequestOpts,
+	SearchProvider,
 } from './providers/types.js'
 export type {
 	Accuracy,
@@ -34,5 +35,6 @@ export type {
 	ProviderName,
 	RateLimit,
 	RequireKey,
+	SearchOpts,
 	WithAddressOpts,
 } from './types.js'
