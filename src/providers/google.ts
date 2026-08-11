@@ -45,11 +45,41 @@ const responseSchema = z.object({
 const optimizationResponseSchema = z.object({
 	routes: z.array(
 		z.object({
-			visits: z.array(z.object({ shipmentIndex: z.number() })),
+			routePolyline: z.optional(z.object({ points: z.string() })),
+			visits: z.array(z.object({ shipmentIndex: z.optional(z.number()) })),
 		}),
 	),
-	skippedShipments: z.optional(z.array(z.object({ index: z.number() }))),
+	skippedShipments: z.optional(
+		z.array(z.object({ index: z.optional(z.number()) })),
+	),
 })
+
+function decodePolyline(value: string): [number, number][] {
+	const path: [number, number][] = []
+	let index = 0
+	let lat = 0
+	let lng = 0
+	const read = () => {
+		let result = 0
+		let shift = 0
+		let byte: number
+		do {
+			if (index >= value.length || shift > 30) throw new Error()
+			byte = value.charCodeAt(index++) - 63
+			if (byte < 0 || byte > 63) throw new Error()
+			result |= (byte & 0x1f) << shift
+			shift += 5
+		} while (byte >= 0x20)
+		return result & 1 ? ~(result >> 1) : result >> 1
+	}
+	while (index < value.length) {
+		lat += read()
+		lng += read()
+		path.push([lng / 1e5, lat / 1e5])
+	}
+	if (path.length < 2) throw new Error()
+	return path
+}
 
 function pickComponent(
 	components: z.infer<typeof componentSchema>[] | undefined,
@@ -241,6 +271,7 @@ export function google({
 			headers,
 			body: JSON.stringify({
 				...(timeoutSeconds ? { timeout: `${timeoutSeconds}s` } : {}),
+				populatePolylines: true,
 				model: {
 					shipments: problem.stops.map(stop => ({
 						deliveries: [
@@ -289,11 +320,25 @@ export function google({
 			})
 
 		const orderIndexes = parsed.data.routes.flatMap(route =>
-			route.visits.map(visit => visit.shipmentIndex),
+			route.visits.map(visit => visit.shipmentIndex ?? 0),
 		)
 		const droppedIndexes = (parsed.data.skippedShipments ?? []).map(
-			shipment => shipment.index,
+			shipment => shipment.index ?? 0,
 		)
+		let path: [number, number][] | undefined
+		if (orderIndexes.length) {
+			try {
+				const polyline = parsed.data.routes[0]?.routePolyline?.points
+				if (!polyline) throw new Error()
+				path = decodePolyline(polyline)
+			} catch {
+				return err({
+					code: 'BAD_RESPONSE',
+					message: 'Invalid Google optimization route polyline',
+					provider: 'google',
+				})
+			}
+		}
 		const indexes = [...orderIndexes, ...droppedIndexes]
 		if (
 			indexes.some(
@@ -313,6 +358,7 @@ export function google({
 			orderIndexes.map(index => problem.stops[index]?.id as string),
 			droppedIndexes.map(index => problem.stops[index]?.id as string),
 			'google',
+			path,
 		)
 	}
 

@@ -232,7 +232,12 @@ test('google optimize sends one vehicle and normalizes its route', async () => {
 	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 		request = { url: new URL(String(input)), init }
 		return Response.json({
-			routes: [{ visits: [{ shipmentIndex: 1 }, { shipmentIndex: 0 }] }],
+			routes: [
+				{
+					routePolyline: { points: '_p~iF~ps|U_ulLnnqC_mqNvxq`@' },
+					visits: [{ shipmentIndex: 1 }, {}],
+				},
+			],
 			skippedShipments: [],
 		})
 	}) as unknown as typeof fetch
@@ -254,7 +259,15 @@ test('google optimize sends one vehicle and normalizes its route', async () => {
 			},
 		})
 		const result = await client.optimize(problem, { timeoutMs: 45_500 })
-		expect(result.data).toEqual({ order: ['b', 'a'], dropped: [] })
+		expect(result.data).toEqual({
+			order: ['b', 'a'],
+			dropped: [],
+			path: [
+				[-120.2, 38.5],
+				[-120.95, 40.7],
+				[-126.453, 43.252],
+			],
+		})
 		expect(request?.url.pathname).toBe('/v1/projects/my-project:optimizeTours')
 		expect(request?.init?.method).toBe('POST')
 		const headers = new Headers(request?.init?.headers)
@@ -264,6 +277,7 @@ test('google optimize sends one vehicle and normalizes its route', async () => {
 		expect(headers.get('X-Server-Timeout')).toBe('46')
 		expect(JSON.parse(String(request?.init?.body))).toEqual({
 			timeout: '46s',
+			populatePolylines: true,
 			model: {
 				shipments: [
 					{
@@ -305,7 +319,10 @@ test('google optimize accepts 1000 stops', async () => {
 	await withFetch(
 		{
 			routes: [
-				{ visits: stops.map((_, shipmentIndex) => ({ shipmentIndex })) },
+				{
+					routePolyline: { points: '_p~iF~ps|U_ulLnnqC_mqNvxq`@' },
+					visits: stops.map((_, shipmentIndex) => ({ shipmentIndex })),
+				},
 			],
 			skippedShipments: [],
 		},
@@ -316,6 +333,27 @@ test('google optimize accepts 1000 stops', async () => {
 				getOptimizationHeaders: optimizationHeaders,
 			}).optimize({ stops })
 			expect(result.data?.order).toHaveLength(1000)
+		},
+	)
+})
+
+test('google optimize rejects an invalid route polyline', async () => {
+	await withFetch(
+		{
+			routes: [
+				{
+					routePolyline: { points: '!' },
+					visits: [{}, { shipmentIndex: 1 }],
+				},
+			],
+		},
+		async () => {
+			const result = await google({
+				apiKey: 'x',
+				projectId: 'project',
+				getOptimizationHeaders: optimizationHeaders,
+			}).optimize(normalizedOptimizationProblem)
+			expect(result.error?.code).toBe('BAD_RESPONSE')
 		},
 	)
 })
