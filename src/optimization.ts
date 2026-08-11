@@ -17,6 +17,7 @@ export type OptimizationProblem = {
 export type OptimizationSolution = {
 	order: string[]
 	dropped: string[]
+	path?: [lng: number, lat: number][]
 }
 
 export type OptimizeOptions = {
@@ -94,6 +95,7 @@ export function normalizeOptimizationSolution(
 	order: string[],
 	dropped: string[],
 	provider: ProviderName,
+	path?: [lng: number, lat: number][],
 ): GeoResult<OptimizationSolution> {
 	const expected = new Set(problem.stops.map(stop => stop.id))
 	const returned = [...order, ...dropped]
@@ -107,5 +109,5 @@ export function normalizeOptimizationSolution(
 			message: `Invalid ${provider} optimization stop order`,
 			provider,
 		})
-	return ok({ order, dropped })
+	return ok({ order, dropped, ...(path ? { path } : {}) })
 }

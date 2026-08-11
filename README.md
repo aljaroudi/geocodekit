@@ -104,7 +104,7 @@ const match = await mapboxClient.mapMatch(gpsTrace, {
 
 ### Route optimization
 
-Mapbox and Google clients share one single-vehicle API. Stops use normal `{ lat, lng }` coordinates; results contain the optimized stop ids and any dropped ids.
+Mapbox and Google clients share one single-vehicle API. Stops use normal `{ lat, lng }` coordinates; results contain the optimized stop ids, any dropped ids, and Google's decoded `[longitude, latitude]` `path` when available.
 
 ```ts
 import { GoogleAuth } from 'google-auth-library'
@@ -127,7 +127,7 @@ const googleClient = google({
   getOptimizationHeaders: () => auth.getRequestHeaders(),
 })
 const result = await googleClient.optimize(problem, { timeoutMs: 60_000 })
-if (!result.error) console.log(result.data.order, result.data.dropped)
+if (!result.error) console.log(result.data.order, result.data.dropped, result.data.path)
 
 // Same problem and result types. Mapbox Optimization v2 access is required.
 await mapboxClient.optimize(problem, { timeoutMs: 60_000 })
