@@ -8,11 +8,13 @@ import type {
 	Coords,
 	GeoResult,
 	Place,
+	SearchOpts,
 } from '../types.js'
 import type {
 	ApiKeyOptions,
 	BatchProvider,
 	ProviderRequestOpts,
+	SearchProvider,
 } from './types.js'
 
 const addressComponentsSchema = z.object({
@@ -90,6 +92,12 @@ function toPlace(r: z.infer<typeof resultSchema>): Place | null {
 }
 
 function parseSingle(json: unknown): GeoResult<Place> {
+	const result = parseList(json, 1)
+	if (result.error) return result
+	return ok(result.data[0] as Place)
+}
+
+function parseList(json: unknown, limit: number): GeoResult<Place[]> {
 	const parsed = z.safeParse(singleSchema, json)
 	if (!parsed.success) {
 		return err({
@@ -105,21 +113,21 @@ function parseSingle(json: unknown): GeoResult<Place> {
 		}
 		return err({ code: 'BAD_REQUEST', message: msg, provider: 'geocod' })
 	}
-	const first = parsed.data.results?.[0]
-	if (!first)
+	const rows = parsed.data.results?.slice(0, limit) ?? []
+	if (!rows.length)
 		return err({
 			code: 'NOT_FOUND',
 			message: 'No results',
 			provider: 'geocod',
 		})
-	const place = toPlace(first)
-	if (!place)
-		return err({
-			code: 'BAD_RESPONSE',
-			message: 'Missing coordinates',
-			provider: 'geocod',
-		})
-	return ok(place)
+	const places = rows.map(toPlace)
+	return places.some(place => !place)
+		? err({
+				code: 'BAD_RESPONSE',
+				message: 'Missing coordinates',
+				provider: 'geocod',
+			})
+		: ok(places as Place[])
 }
 
 function queryBody(q: string): string
@@ -141,32 +149,62 @@ function queryBody(q: AddressQuery): string | Record<string, string> {
 
 export type GeocodOptions = ApiKeyOptions
 
-export function geocod({ apiKey }: GeocodOptions): BatchProvider {
-	async function geocode(
+export function geocod({
+	apiKey,
+}: GeocodOptions): BatchProvider & SearchProvider {
+	async function forward(
 		query: AddressQuery,
+		limit: number,
 		opts?: ProviderRequestOpts,
-	): Promise<GeoResult<Place>> {
+	): Promise<GeoResult<unknown>> {
 		const url = new URL('https://api.geocod.io/v1.12/geocode')
 		url.searchParams.set('api_key', apiKey)
-		url.searchParams.set('limit', '1')
-		// language: Geocod.io has no language param — best-effort no-op
+		url.searchParams.set('limit', String(limit))
 		if (opts?.country) url.searchParams.set('country', opts.country)
 		if (typeof query === 'string') {
 			url.searchParams.set('q', query)
 		} else {
 			const body = queryBody(query)
-			for (const [k, v] of Object.entries(body)) url.searchParams.set(k, v)
-			if (!url.searchParams.has('country') && opts?.country) {
-				url.searchParams.set('country', opts.country)
-			}
+			for (const [key, value] of Object.entries(body))
+				url.searchParams.set(key, value)
 		}
-		const json = await safeJson(url, {
+		return safeJson(url, {
 			provider: 'geocod',
 			signal: opts?.signal,
 			timeoutMs: opts?.timeoutMs,
 		})
+	}
+
+	async function geocode(
+		query: AddressQuery,
+		opts?: ProviderRequestOpts,
+	): Promise<GeoResult<Place>> {
+		// language: Geocod.io has no language param — best-effort no-op
+		const json = await forward(query, 1, opts)
 		if (json.error) return json
 		return parseSingle(json.data)
+	}
+
+	async function search(
+		query: string,
+		opts?: SearchOpts,
+	): Promise<GeoResult<Place[]>> {
+		if (!query.trim())
+			return err({
+				code: 'BAD_REQUEST',
+				message: 'Empty search query',
+				provider: 'geocod',
+			})
+		const limit = opts?.limit ?? 5
+		if (!Number.isInteger(limit) || limit < 1 || limit > 10)
+			return err({
+				code: 'BAD_REQUEST',
+				message: 'limit must be an integer from 1 to 10',
+				provider: 'geocod',
+			})
+		const json = await forward(query, limit, opts)
+		if (json.error) return json
+		return parseList(json.data, limit)
 	}
 
 	async function reverseGeocode(
@@ -245,7 +283,7 @@ export function geocod({ apiKey }: GeocodOptions): BatchProvider {
 		const json = await safeJson(url, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(coordsList.map((c) => `${c.lat},${c.lng}`)),
+			body: JSON.stringify(coordsList.map(c => `${c.lat},${c.lng}`)),
 			provider: 'geocod',
 			signal: opts?.signal,
 			timeoutMs: opts?.timeoutMs,
@@ -277,6 +315,7 @@ export function geocod({ apiKey }: GeocodOptions): BatchProvider {
 		name: 'geocod',
 		defaultRateLimit: { maxPerMinute: 1000 },
 		geocode,
+		search,
 		reverseGeocode,
 		geocodeBatch,
 		reverseGeocodeBatch,

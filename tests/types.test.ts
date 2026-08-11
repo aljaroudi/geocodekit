@@ -20,7 +20,19 @@ import type {
 import { mapbox } from '../src/mapbox.js'
 import type { Provider } from '../src/providers/types.js'
 import { ok } from '../src/result.js'
-import type { Coords, GeoResult, Place } from '../src/types.js'
+import type { Coords, GeoResult, Place, SearchOpts } from '../src/types.js'
+
+test('search exposes normalized candidates', () => {
+	const geo = createGeocoder({ providers: [mapbox({ apiKey: 'x' })] })
+	const opts = { limit: 3, country: 'US' } satisfies SearchOpts
+	const result: Promise<GeoResult<Place[]>> = geo.search('Main', opts)
+	const direct: Promise<GeoResult<Place[]>> = google({ apiKey: 'x' }).search(
+		'Main',
+	)
+	void result
+	void direct
+	expect(opts.limit).toBe(3)
+})
 
 test('mode batch allowed when a provider supports batch', () => {
 	const geo = createGeocoder({ providers: [mapbox({ apiKey: 'x' })] })

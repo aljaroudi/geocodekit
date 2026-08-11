@@ -6,6 +6,7 @@ import type {
 	Place,
 	ProviderName,
 	RateLimit,
+	SearchOpts,
 } from '../types.js'
 
 export type ApiKeyOptions = { apiKey: string }
@@ -34,6 +35,11 @@ export type Provider = {
 		coords: Coords[],
 		opts?: ProviderRequestOpts,
 	): Promise<GeoResult<Place>[]>
+	search?(query: string, opts?: SearchOpts): Promise<GeoResult<Place[]>>
+}
+
+export type SearchProvider = Provider & {
+	search: NonNullable<Provider['search']>
 }
 
 export type BatchProvider = Provider & {

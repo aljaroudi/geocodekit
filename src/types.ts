@@ -170,6 +170,14 @@ export type LookupOpts<
 	minAccuracy?: A
 }
 
+export type SearchOpts = Pick<
+	LookupOptsBase,
+	'country' | 'language' | 'signal' | 'timeoutMs' | 'permanent'
+> & {
+	/** Maximum candidates to return. Defaults to 5; valid range is 1-10. */
+	limit?: number
+}
+
 export type WithAddressOpts<
 	T,
 	R extends RequireKey = never,

@@ -152,6 +152,123 @@ test('geocoder', async () => {
 	if (empty.error) expect(empty.error.code).toBe('BAD_REQUEST')
 })
 
+test('search skips unsupported providers and falls back', async () => {
+	const unsupported: Provider = {
+		name: 'mapbox',
+		defaultRateLimit: { maxPerMinute: 1000 },
+		async geocode() {
+			return ok(place)
+		},
+		async reverseGeocode() {
+			return ok(place)
+		},
+	}
+	const miss: Provider = {
+		...unsupported,
+		name: 'google',
+		async search() {
+			return err({ code: 'NOT_FOUND', message: 'miss', provider: 'google' })
+		},
+	}
+	const hit: Provider = {
+		...unsupported,
+		name: 'geocod',
+		async search(_query, opts) {
+			return ok([{ ...place, provider: 'geocod', name: String(opts?.limit) }])
+		},
+	}
+	const geo = createGeocoder({ providers: [unsupported, miss, hit] })
+
+	const result = await geo.search('Main', { limit: 2 })
+	expect(result.error).toBe(null)
+	if (!result.error) {
+		expect(result.data[0]?.provider).toBe('geocod')
+		expect(result.data[0]?.name).toBe('2')
+	}
+	const defaulted = await geo.search('Main')
+	if (!defaulted.error) expect(defaulted.data[0]?.name).toBe('5')
+	expect((await geo.search('  ')).error?.code).toBe('BAD_REQUEST')
+	expect((await geo.search('x', { limit: 11 })).error?.code).toBe('BAD_REQUEST')
+	expect(
+		(await createGeocoder({ providers: [unsupported] }).search('x')).error
+			?.code,
+	).toBe('BAD_REQUEST')
+})
+
+test('provider search returns ordered candidates and request options', async () => {
+	const requests: URL[] = []
+	const responses = [
+		{
+			type: 'FeatureCollection',
+			features: [
+				{
+					id: 'mapbox-1',
+					geometry: { coordinates: [1, 2] },
+					properties: { name: 'First', feature_type: 'place' },
+				},
+				{
+					id: 'mapbox-2',
+					geometry: { coordinates: [3, 4] },
+					properties: { name: 'Second', feature_type: 'place' },
+				},
+			],
+		},
+		{
+			status: 'OK',
+			results: [
+				{
+					formatted_address: 'First',
+					geometry: { location: { lat: 2, lng: 1 } },
+				},
+				{
+					formatted_address: 'Second',
+					geometry: { location: { lat: 4, lng: 3 } },
+				},
+			],
+		},
+		{
+			results: [
+				{ formatted_address: 'First', location: { lat: 2, lng: 1 } },
+				{ formatted_address: 'Second', location: { lat: 4, lng: 3 } },
+			],
+		},
+	]
+	const previous = globalThis.fetch
+	globalThis.fetch = (async (input: RequestInfo | URL) => {
+		requests.push(new URL(String(input)))
+		return Response.json(responses.shift())
+	}) as typeof fetch
+	try {
+		const results = await Promise.all([
+			mapbox({ apiKey: 'm' }).search('Main', { limit: 2, country: 'US' }),
+			google({ apiKey: 'g' }).search('Main', { limit: 2, country: 'US' }),
+			geocod({ apiKey: 'c' }).search('Main', { limit: 2, country: 'US' }),
+		])
+		expect(
+			results.map(result => result.data?.map(item => item.formatted)),
+		).toEqual([
+			['First', 'Second'],
+			['First', 'Second'],
+			['First', 'Second'],
+		])
+		expect(requests[0]?.searchParams.get('autocomplete')).toBe('true')
+		expect(requests[0]?.searchParams.get('limit')).toBe('2')
+		expect(requests[1]?.searchParams.get('region')).toBe('us')
+		expect(requests[2]?.searchParams.get('limit')).toBe('2')
+	} finally {
+		globalThis.fetch = previous
+	}
+})
+
+test('search forwards abort signals', async () => {
+	const controller = new AbortController()
+	controller.abort()
+	const result = await mapbox({ apiKey: 'x' }).search('Main', {
+		signal: controller.signal,
+	})
+	expect(result.error?.code).toBe('ABORTED')
+})
+
 async function withFetch(
 	body: unknown,
 	run: () => Promise<void>,
