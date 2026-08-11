@@ -181,10 +181,17 @@ function structuredToAddress(q: Exclude<AddressQuery, string>): string {
 		.join(', ')
 }
 
-export type GoogleOptions = ApiKeyOptions & { projectId?: string }
+export type GoogleOptions = ApiKeyOptions & {
+	projectId?: string
+	getOptimizationHeaders?: () => HeadersInit | Promise<HeadersInit>
+}
 export type GoogleClient = OptimizationProvider
 
-export function google({ apiKey, projectId }: GoogleOptions): GoogleClient {
+export function google({
+	apiKey,
+	projectId,
+	getOptimizationHeaders,
+}: GoogleOptions): GoogleClient {
 	async function optimize(
 		problem: OptimizationProblem,
 		opts?: OptimizeOptions,
@@ -197,6 +204,29 @@ export function google({ apiKey, projectId }: GoogleOptions): GoogleClient {
 				message: 'Google projectId is required for optimization',
 				provider: 'google',
 			})
+		if (!getOptimizationHeaders)
+			return err({
+				code: 'AUTH',
+				message: 'Google optimization auth headers are required',
+				provider: 'google',
+			})
+
+		let headers: Headers
+		try {
+			headers = new Headers(await getOptimizationHeaders())
+		} catch {
+			return err({
+				code: 'AUTH',
+				message: 'Failed to get Google optimization auth headers',
+				provider: 'google',
+			})
+		}
+		if (!headers.has('Authorization'))
+			return err({
+				code: 'AUTH',
+				message: 'Google optimization Authorization header is required',
+				provider: 'google',
+			})
 
 		const timeoutSeconds = opts?.timeoutMs
 			? Math.max(1, Math.ceil(opts.timeoutMs / 1000))
@@ -204,15 +234,11 @@ export function google({ apiKey, projectId }: GoogleOptions): GoogleClient {
 		const url = new URL(
 			`https://routeoptimization.googleapis.com/v1/projects/${encodeURIComponent(projectId)}:optimizeTours`,
 		)
+		headers.set('Content-Type', 'application/json')
+		if (timeoutSeconds) headers.set('X-Server-Timeout', String(timeoutSeconds))
 		const json = await safeJson(url, {
 			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'X-Goog-Api-Key': apiKey,
-				...(timeoutSeconds
-					? { 'X-Server-Timeout': String(timeoutSeconds) }
-					: {}),
-			},
+			headers,
 			body: JSON.stringify({
 				...(timeoutSeconds ? { timeout: `${timeoutSeconds}s` } : {}),
 				model: {

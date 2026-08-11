@@ -211,7 +211,11 @@ test('optimization providers share normalized types', () => {
 	} as const satisfies OptimizationProblem
 	const providers: OptimizationProvider[] = [
 		mapbox({ apiKey: 'x' }),
-		google({ apiKey: 'x', projectId: 'project' }),
+		google({
+			apiKey: 'x',
+			projectId: 'project',
+			getOptimizationHeaders: async () => ({ Authorization: 'Bearer token' }),
+		}),
 	]
 	const methods: Array<
 		(problem: OptimizationProblem) => Promise<GeoResult<OptimizationSolution>>
